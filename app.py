@@ -16,7 +16,7 @@ st.markdown(
         padding: 0.15rem 0.35rem 0rem 0.35rem !important;
         max-width: 100% !important;
     }
-    .stApp { background-color: #030408; }
+    .stApp { background-color: #020307; }
     iframe {
         border: none !important;
         display: block;
@@ -38,7 +38,7 @@ GAME_HTML = r"""
   body {
     margin: 0;
     padding: 0;
-    background: #030408;
+    background: #020307;
     display: flex;
     justify-content: center;
     align-items: center;
@@ -46,10 +46,10 @@ GAME_HTML = r"""
     overflow: hidden;
   }
   canvas {
-    background: #050710;
-    border: 2px solid #1e293b;
-    border-radius: 6px;
-    box-shadow: 0 0 55px rgba(0, 0, 0, 0.98);
+    background: #04060e;
+    border: 2px solid #2b3c56;
+    border-radius: 8px;
+    box-shadow: 0 0 75px rgba(14, 165, 233, 0.22), 0 0 100px rgba(0, 0, 0, 0.98);
     max-width: 100vw;
     max-height: 99vh;
   }
@@ -65,56 +65,83 @@ const W = canvas.width;
 const H = canvas.height;
 
 // =========================================================================
-// 1. 고밀도 픽셀 스프라이트 컴포지터 (자동 외곽선 + 림 라이팅 + 2프레임 호흡 + 히트플래시)
+// 1. 고밀도 32x32 4프레임 픽셀 스프라이트 컴포지터 (음영 + 림라이팅 + 망토/눈 발광)
 // =========================================================================
-function createAnimatedSprite(palette, rows, rimColor = '#7dd3fc') {
+function createAnimatedSprite(palette, rows, rimColor = '#7dd3fc', glowChars = ['W', 'C', 'T', 'P', 'O']) {
   const S = 32;
   const grid = Array.from({ length: S }, (_, y) => {
     const line = (rows[y] || '').padEnd(S, '.').slice(0, S);
-    return line.split('').map(ch => (ch !== '.' && palette[ch]) ? palette[ch] : null);
+    return line.split('').map(ch => (ch !== '.' && palette[ch]) ? { ch, col: palette[ch] } : null);
   });
 
-  function renderFrame(yShiftUpper, flashWhite = false) {
+  function renderFrame(frameIdx, mode = 'normal') {
     const off = document.createElement('canvas');
     off.width = S;
     off.height = S;
     const octx = off.getContext('2d');
 
+    const yShiftUpper = (frameIdx === 1 || frameIdx === 2) ? 1 : 0;
+    const capeShift = (frameIdx === 2 || frameIdx === 3) ? -1 : 0;
+
     const shifted = Array.from({ length: S }, () => Array(S).fill(null));
     for (let y = 0; y < S; y++) {
       for (let x = 0; x < S; x++) {
-        const col = grid[y][x];
-        if (!col) continue;
-        const ny = y < 18 ? Math.max(1, Math.min(S - 2, y + yShiftUpper)) : y;
-        shifted[ny][x] = col;
+        const cell = grid[y][x];
+        if (!cell) continue;
+        let ny = y < 20 ? Math.max(1, Math.min(S - 2, y + yShiftUpper)) : y;
+        let nx = x;
+        // 좌측 외곽 망토/날개 미세 흔들림
+        if (x <= 7 && y >= 10 && y <= 24) {
+          nx = Math.max(1, Math.min(S - 2, x + capeShift));
+        }
+        shifted[ny][nx] = cell;
       }
     }
 
-    // 1px 진한 외곽선
-    octx.fillStyle = '#05070e';
-    for (let y = 1; y < S - 1; y++) {
-      for (let x = 1; x < S - 1; x++) {
-        if (shifted[y][x]) continue;
-        if (shifted[y - 1][x] || shifted[y + 1][x] || shifted[y][x - 1] || shifted[y][x + 1]) {
-          octx.fillRect(x, y, 1, 1);
+    if (mode !== 'ghost') {
+      octx.fillStyle = '#03050a';
+      for (let y = 1; y < S - 1; y++) {
+        for (let x = 1; x < S - 1; x++) {
+          if (shifted[y][x]) continue;
+          if (shifted[y - 1][x] || shifted[y + 1][x] || shifted[y][x - 1] || shifted[y][x + 1]) {
+            octx.fillRect(x, y, 1, 1);
+          }
         }
       }
     }
 
-    // 본체 + 상단/좌측 역광 림 라이팅
     for (let y = 1; y < S - 1; y++) {
       for (let x = 1; x < S - 1; x++) {
-        const col = shifted[y][x];
-        if (!col) continue;
-        if (flashWhite) {
+        const cell = shifted[y][x];
+        if (!cell) continue;
+        if (mode === 'flash') {
           octx.fillStyle = '#ffffff';
           octx.fillRect(x, y, 1, 1);
-        } else {
-          octx.fillStyle = col;
+        } else if (mode === 'ghost') {
+          octx.fillStyle = rimColor;
           octx.fillRect(x, y, 1, 1);
+        } else {
+          octx.fillStyle = cell.col;
+          octx.fillRect(x, y, 1, 1);
+
+          // 역광 림 라이팅 (상단 & 좌측)
           if (!shifted[y - 1][x] || !shifted[y][x - 1]) {
             octx.fillStyle = rimColor;
-            octx.globalAlpha = 0.34;
+            octx.globalAlpha = 0.45;
+            octx.fillRect(x, y, 1, 1);
+            octx.globalAlpha = 1.0;
+          }
+          // 입체 하단/우측 그림자
+          if (!shifted[y + 1][x] || !shifted[y][x + 1]) {
+            octx.fillStyle = '#000000';
+            octx.globalAlpha = 0.36;
+            octx.fillRect(x, y, 1, 1);
+            octx.globalAlpha = 1.0;
+          }
+          // 눈/코어/무기 맥동 글로우
+          if (glowChars.includes(cell.ch) && (frameIdx === 1 || frameIdx === 2)) {
+            octx.fillStyle = '#ffffff';
+            octx.globalAlpha = 0.35;
             octx.fillRect(x, y, 1, 1);
             octx.globalAlpha = 1.0;
           }
@@ -125,9 +152,9 @@ function createAnimatedSprite(palette, rows, rimColor = '#7dd3fc') {
   }
 
   return {
-    f0: renderFrame(0, false),
-    f1: renderFrame(1, false),
-    flash: renderFrame(0, true)
+    frames: [renderFrame(0), renderFrame(1), renderFrame(2), renderFrame(3)],
+    flash: renderFrame(0, 'flash'),
+    ghost: renderFrame(0, 'ghost')
   };
 }
 
@@ -152,17 +179,17 @@ const SPRITES = {
     '.....GWCCCCCCCCCCCCCCCCCCWG.....',
     '......GGGGGGGGGGGGGGGGGGGG......',
     '.......BBBBBBBBBBBBBBBBBB.......',
-    '...BBBBGGGGGGGGGGGGGGGGGGGBBBB..',
-    '..YYYBGGGGGGGYYYYYYGGGGGGGGBYYY.',
-    '.YYYBGGGGGGGYYYYYYYYGGGGGGGGBYYY',
-    '.BBGGGGGGGGGGYYYYYYGGGGGGGGGGGBB',
-    '..UBGGGGGGGGGGYYYYGGGGGGGGGGGBU.',
-    '..UBBGGGGGGGGGGGGGGGGGGGGGGGBBU.',
-    '...UU.BBBBBBBBBBBBBBBBBBBB.UU...',
-    '.......GGGGGGGGGGGGGGGGGG.......',
-    '.......GGGGGG......GGGGGG.......',
-    '.......GGGGGG......GGGGGG.......',
-    '......BBBBBBB......BBBBBBB......'
+    '..UBBBBGGGGGGGGGGGGGGGGGGGBBBB..',
+    '.UYYYBGGGGGGGYYYYYYGGGGGGGGBYYYW',
+    'UUYYBGGGGGGGYYYYYYYYGGGGGGGGBYYW',
+    'UBBGGGGGGGGGGYYYYYYGGGGGGGGGGGBW',
+    'UUBGGGGGGGGGGGYYYYGGGGGGGGGGGGBW',
+    'UUBBGGGGGGGGGGGGGGGGGGGGGGGGGBBW',
+    '.UU.BBBBBBBBBBBBBBBBBBBBBBBB.G..',
+    '.....GGGGGGGGGGGGGGGGGGGGGG..B..',
+    '......GGGGGGG......GGGGGGG......',
+    '......GGGGGGG......GGGGGGG......',
+    '.....BBBBBBBB......BBBBBBBB.....'
   ], '#fef08a'),
 
   kaleos: createAnimatedSprite(PAL, [
@@ -175,12 +202,12 @@ const SPRITES = {
     '......EKKKKKKKKKKKKKKKKKKE......',
     '.......EEEEEEEEEEEEEEEEEE.......',
     '........NNNNNNNNNNNNNNNN........',
-    '...NNNNNKKKKKKKKKKKKKKKKNNNNN...',
-    '..EEEENNKKKKKKKKKKKKKKKKNNEEEE..',
-    '.EEEENNKKKKKKEEEEEEKKKKKKNNEEEE.',
-    '..NNKKKKKKKKEEEEEEEEKKKKKKKKNN..',
-    '..WWKKKKKKKKKEEEEEEKKKKKKKKKWW..',
-    '.WWWKKKKKKKKKNNNNNNKKKKKKKKKWWW.',
+    '..NNNNNNKKKKKKKKKKKKKKKKNNNNN...',
+    '.NEEEENNKKKKKKKKKKKKKKKKNNEEEE..',
+    'NNEEENNKKKKKKEEEEEEKKKKKKNNEEEE.',
+    'NNNKKKKKKKKKEEEEEEEEKKKKKKKKNN..',
+    'NNWWKKKKKKKKKEEEEEEKKKKKKKKKWW..',
+    'NWWWKKKKKKKKKNNNNNNKKKKKKKKKWWW.',
     '.WW..NNNNNNNNNNNNNNNNNNNNNN..WW.',
     '......NNNNNNN......NNNNNNN......',
     '......KKKKKKK......KKKKKKK......',
@@ -195,12 +222,12 @@ const SPRITES = {
     '.....GGGTVVVVVVVVVVVVVVTGGG.....',
     '......GGGGGGGGGGGGGGGGGGGG......',
     '.......AAAAAAAAAAAAAAAAAA.......',
-    '...AAAAAGGGGGGGGGGGGGGGGAAAAA...',
-    '..TTTTAAGGGGGGTTTTGGGGGGAAATTTT.',
-    '.TTTTAAGGGGGGTTTTTTGGGGGGAAATTTT',
-    '..AAAAGGGGGGGGTTTTGGGGGGGGAAAA..',
-    '...GGGGGGGGGGGGGGGGGGGGGGGGGG...',
-    '....TTTTTTTTTTTTTTTTTTTTTTTT....',
+    '..AAAAAAGGGGGGGGGGGGGGGGAAAAA...',
+    '.ATTTTAAGGGGGGTTTTGGGGGGAAATTTT.',
+    'ATTTTTAAGGGGGGTTTTTTGGGGGGAAATTT',
+    'ATAAAAGGGGGGGGGTTTTGGGGGGGGAAAA.',
+    'AT.GGGGGGGGGGGGGGGGGGGGGGGGGG...',
+    'A...TTTTTTTTTTTTTTTTTTTTTTTT....',
     '.....AAAAAAAAAAAAAAAAAAAAAA.....',
     '......GGGGGGG......GGGGGGG......',
     '......AAAAAAA......AAAAAAA......',
@@ -218,8 +245,8 @@ const SPRITES = {
     '.ZZZZZZXXXXXXXXXXXXXXXXXXZZZZZZ.',
     'ZZZZZZZZXXXXXXXXXXXXXXXXZZZZZZZZ',
     'ZZZPPZZZZXXXXXPPPPXXXXXZZZZPPZZZ',
-    '.ZZ..ZZZXXXXXXXXXXXXXXXXZZZ..ZZ.',
-    '.....ZZZXXXXXXXXXXXXXXXXZZZ.....',
+    'ZZZ..ZZZXXXXXXXXXXXXXXXXZZZ..ZZZ',
+    'ZZ...ZZZXXXXXXXXXXXXXXXXZZZ...ZZ',
     '......ZZZXXXXXXXXXXXXXXZZZ......',
     '......ZZZZZXXXXXXXXXXZZZZZ......',
     '.....ZZZZZZZ........ZZZZZZZ.....',
@@ -257,8 +284,8 @@ const SPRITES = {
     '..HHHHFFFFFFFFFFFFFFFFFFFFHHHH..',
     '.SSSSHHIIIIIIIIIIIIIIIIIIHHSSSS.',
     'SSSSSSHHIIIIIIWWWWIIIIIIHHSSSSSS',
-    '.SS..HHIIIIIIIIIIIIIIIIIIHH..SS.',
-    '.....HHFFFFFFFFFFFFFFFFFFHH.....',
+    'SSS..HHIIIIIIIIIIIIIIIIIIHH..SSS',
+    'SS...HHFFFFFFFFFFFFFFFFFFHH...SS',
     '......IIIIIIIIIIIIIIIIIIII......',
     '......HHHHHH........HHHHHH......',
     '.....IIIIIII........IIIIIII.....',
@@ -451,8 +478,27 @@ const SPRITES = {
   ], '#94a3b8')
 };
 
+const KEYWORD_GLOSSARY = {
+  zeal_atk2: '☀️ 열성: 내 장군 주변 8칸 안에 있을 때 공격력 +2',
+  provoke: '🛡️ 도발: 인접한 적 유닛의 이동을 봉쇄하고 공격을 강제함',
+  airdrop: '🪂 공수: 보드의 빈 칸 어디든 자유롭게 소환 배치 가능',
+  backstab: '🗡️ 기습: 적의 등 뒤(오른쪽) 공격 시 +2 피해 & 반격 무시',
+  celerity: '⚡ 질풍: 한 턴에 2회 이동 및 2회 공격 가능',
+  blast: '⚡ 폭발: 같은 가로줄의 모든 적을 반격 없이 관통 타격',
+  flying: '🕊️ 비행: 거리 제한 없이 보드 어디로든 이동 가능',
+  structure: '🏛️ 구조물: 스스로 이동하거나 공격하지 못하는 설치물',
+  dw_grow: '👁️ 죽음의 주시: 전장에서 유닛이 죽을 때마다 +1/+1 성장',
+  dw_wraith: '👁️ 죽음의 주시: 전장에서 유닛이 죽을 때마다 망령 소환',
+  rush: '💨 돌진: 소환된 턴에도 즉시 이동과 공격이 가능',
+  rebirth: '🥚 환생: 사망 시 0/1 알을 남기고 내 다음 턴 시작 시 부활',
+  grow1: '🌿 성장: 내 턴 시작마다 +1/+1씩 영구 성장',
+  frenzy: '🌪️ 광란: 공격 시 주위 8칸의 모든 적을 동시에 타격',
+  infiltrate_atk2: '❄️ 침투: 적 진영(F~I열)에 있을 때 공격력 +2',
+  ranged: '🏹 원거리: 거리 상관없이 보드 어디든 반격 없이 공격'
+};
+
 // =========================================================================
-// 2. 난이도 & 6대 진영 고유 키워드/카드 풀 (배치·기동 키워드 & 수동 함성 완비)
+// 2. 난이도 & 6대 진영 고유 키워드/카드 풀
 // =========================================================================
 const DIFFICULTIES = [
   { id: 'easy', name: '입문 (EASY)', color: '#34d399', eHp: 20, bonusCard: 0, desc: '입문 AI. 기본 소환과 근접 교전 위주로 행동합니다.' },
@@ -464,7 +510,7 @@ const DIFFICULTIES = [
 const FACTIONS = {
   argeon: {
     id: 'argeon', name: '아르게온 하이메이', title: '라이오나르 왕국 (LYONAR)',
-    color: '#fbbf24', sprite: 'argeon',
+    color: '#fbbf24', sprite: 'argeon', ambient: 'gold',
     mechanicTag: '열성 (ZEAL) · 도발 · 수동 치유',
     mechanicDesc: '장군 주변 8칸 배치 시 열성 버프가 켜지며, 치유 대상 직접 지정으로 전선을 유지합니다.',
     bbsName: '왕의 포효 (Roar)', bbsCost: 1, bbsDesc: '주변 아군 1기에게 공격력 +2 영구 부여',
@@ -473,16 +519,16 @@ const FACTIONS = {
       { name: '은빛 방패기사', type: 'minion', cost: 3, atk: 1, hp: 5, sprite: 'golem', keywords: ['provoke', 'zeal_atk2'], desc: '도발 · 열성: 장군 주변에서 3/5 도발 벽이 됩니다.' },
       { name: '선홍빛 예언자', type: 'minion', cost: 3, atk: 3, hp: 3, sprite: 'paladin', keywords: ['airdrop', 'zeal_atk2'], desc: '공수(Airdrop) · 열성: 보드 어디든 투하 배치 가능!' },
       { name: '태양의 성기사', type: 'minion', cost: 4, atk: 4, hp: 4, sprite: 'paladin', keywords: ['gambit_heal4'], desc: '함성(대상 지정): 선택한 아군 유닛/장군 체력 +4 회복!' },
-      { name: '신성한 결속', type: 'spell', cost: 2, spell: 'divine_bond', desc: '스펠: 아군 하수인 1기에게 현재 체력만큼 공격력 부여!' },
-      { name: '성스러운 제물', type: 'spell', cost: 4, spell: 'holy_immolation', desc: '스펠: 아군 1기 체력 +4 회복 & 주변 모든 적에게 4 피해!' },
-      { name: '순교 (Martyrdom)', type: 'spell', cost: 2, spell: 'martyrdom', desc: '스펠: 대상 하수인 즉시 처치 & 그 주인 장군을 체력만큼 회복.' },
-      { name: '폭풍의 심판', type: 'spell', cost: 2, spell: 'tempest', desc: '스펠: 전장의 모든 유닛과 장군에게 2 광역 피해!' },
+      { name: '신성한 결속', type: 'spell', cost: 2, spell: 'divine_bond', vfx: 'holy', desc: '스펠: 아군 하수인 1기에게 현재 체력만큼 공격력 부여!' },
+      { name: '성스러운 제물', type: 'spell', cost: 4, spell: 'holy_immolation', vfx: 'holy', desc: '스펠: 아군 1기 체력 +4 회복 & 주변 모든 적에게 4 피해!' },
+      { name: '순교 (Martyrdom)', type: 'spell', cost: 2, spell: 'martyrdom', vfx: 'holy', desc: '스펠: 대상 하수인 즉시 처치 & 그 주인 장군을 체력만큼 회복.' },
+      { name: '폭풍의 심판', type: 'spell', cost: 2, spell: 'tempest', vfx: 'lightning', desc: '스펠: 전장의 모든 유닛과 장군에게 2 광역 피해!' },
       { name: '아클라이트 성갑', type: 'artifact', cost: 3, atkBonus: 2, art: 'artifact_regalia', desc: '아티팩트 (내구도 3): 장군 공격력 +2 & 받는 피해 2 경감!' }
     ]
   },
   kaleos: {
     id: 'kaleos', name: '칼레오스 잔', title: '송하이 제국 (SONGHAI)',
-    color: '#f43f5e', sprite: 'kaleos',
+    color: '#f43f5e', sprite: 'kaleos', ambient: 'ember',
     mechanicTag: '기습 (BACKSTAB) · 공수 · 질풍',
     mechanicDesc: '적 등 뒤(오른쪽) 배치 및 침투로 반격 없는 치명타와 연쇄 주문을 폭발시킵니다.',
     bbsName: '점멸 (Blink)', bbsCost: 1, bbsDesc: '아군 하수인 1기를 2칸 이내 빈 칸으로 순간이동',
@@ -491,16 +537,16 @@ const FACTIONS = {
       { name: '카이도 암살자', type: 'minion', cost: 2, atk: 2, hp: 3, sprite: 'assassin', keywords: ['backstab'], desc: '기습(+2): 적 등 뒤(오른쪽) 공격 시 4 피해 & 반격 무시!' },
       { name: '그림자 공수병', type: 'minion', cost: 3, atk: 2, hp: 2, sprite: 'assassin', keywords: ['airdrop', 'backstab'], desc: '공수 · 기습(+2): 적의 등 뒤 빈 칸에 직접 투하 배치 가능!' },
       { name: '등불 여우', type: 'minion', cost: 3, atk: 2, hp: 4, sprite: 'chakri', keywords: ['celerity'], desc: '질풍(Celerity): 한 턴에 2회 이동 및 2회 공격이 가능합니다!' },
-      { name: '불사조의 불꽃', type: 'spell', cost: 2, spell: 'phoenix_fire', desc: '스펠: 대상 적에게 3 피해를 입히고 카드 1장을 뽑습니다.' },
-      { name: '내면의 집중', type: 'spell', cost: 1, spell: 'inner_focus', desc: '스펠: 공격력 3 이하 아군 하수인 1기를 즉시 재행동!' },
-      { name: '자리 바꾸기', type: 'spell', cost: 1, spell: 'juxtaposition', desc: '스펠: 전장의 두 하수인 위치를 서로 맞바꿉니다!' },
-      { name: '유령 번개', type: 'spell', cost: 1, spell: 'ghost_lightning', desc: '스펠: 모든 적 하수인에게 1 피해를 입힙니다.' },
+      { name: '불사조의 불꽃', type: 'spell', cost: 2, spell: 'phoenix_fire', vfx: 'fire', desc: '스펠: 대상 적에게 3 피해를 입히고 카드 1장을 뽑습니다.' },
+      { name: '내면의 집중', type: 'spell', cost: 1, spell: 'inner_focus', vfx: 'fire', desc: '스펠: 공격력 3 이하 아군 하수인 1기를 즉시 재행동!' },
+      { name: '자리 바꾸기', type: 'spell', cost: 1, spell: 'juxtaposition', vfx: 'void', desc: '스펠: 전장의 두 하수인 위치를 서로 맞바꿉니다!' },
+      { name: '유령 번개', type: 'spell', cost: 1, spell: 'ghost_lightning', vfx: 'lightning', desc: '스펠: 모든 적 하수인에게 1 피해를 입힙니다.' },
       { name: '그림자 가면', type: 'artifact', cost: 2, atkBonus: 2, art: 'artifact_mask', desc: '아티팩트 (내구도 3): 장군 공격력 +2 및 원거리(Ranged) 부여!' }
     ]
   },
   zirix: {
     id: 'zirix', name: '지릭스 스타스트라이더', title: '베트루비안 제국 (VETRUVIAN)',
-    color: '#14b8a6', sprite: 'zirix',
+    color: '#14b8a6', sprite: 'zirix', ambient: 'sand',
     mechanicTag: '폭발 레이저 (BLAST) · 오벨리스크 · 비행',
     mechanicDesc: '가로줄 전체를 반격 없이 관통하는 폭발 광선과 오벨리스크 구조물을 전장에 세웁니다.',
     bbsName: '바람의 소환', bbsCost: 1, bbsDesc: '장군 주변 빈 칸에 2/2 돌진 데르비시 소환',
@@ -509,16 +555,16 @@ const FACTIONS = {
       { name: '화염술사', type: 'minion', cost: 2, atk: 2, hp: 1, sprite: 'archer', keywords: ['blast'], desc: '폭발(Blast): 같은 가로줄의 모든 적을 반격 없이 관통 공격!' },
       { name: '모래 날개 정령', type: 'minion', cost: 3, atk: 3, hp: 3, sprite: 'dervish', keywords: ['flying'], desc: '비행(Flying): 거리와 장애물 상관없이 보드 어디로든 이동!' },
       { name: '사막 스캐럽', type: 'minion', cost: 5, atk: 3, hp: 5, sprite: 'golem', keywords: ['blast'], desc: '폭발(Blast): 3 공격력으로 가로줄 전체를 휩쓰는 고대 병기!' },
-      { name: '자손의 축복', type: 'spell', cost: 2, spell: 'scions_wish', desc: '스펠: 아군 하수인에게 +2/+2를 부여하고 카드 1장 드로우.' },
-      { name: '엔트로피 붕괴', type: 'spell', cost: 3, spell: 'entropic_decay', desc: '스펠: 아군 장군 주변 8칸 내 적 하수인 1기 즉시 소멸!' },
-      { name: '별의 분노', type: 'spell', cost: 4, spell: 'stars_fury', desc: '스펠: 모든 적 유닛 바로 앞 칸에 2/2 돌진 데르비시 소환!' },
-      { name: '모래의 뼈무리', type: 'spell', cost: 2, spell: 'bone_swarm', desc: '스펠: 적 장군과 그 주변 모든 적에게 2 광역 피해!' },
+      { name: '자손의 축복', type: 'spell', cost: 2, spell: 'scions_wish', vfx: 'holy', desc: '스펠: 아군 하수인에게 +2/+2를 부여하고 카드 1장 드로우.' },
+      { name: '엔트로피 붕괴', type: 'spell', cost: 3, spell: 'entropic_decay', vfx: 'lightning', desc: '스펠: 아군 장군 주변 8칸 내 적 하수인 1기 즉시 소멸!' },
+      { name: '별의 분노', type: 'spell', cost: 4, spell: 'stars_fury', vfx: 'holy', desc: '스펠: 모든 적 유닛 바로 앞 칸에 2/2 돌진 데르비시 소환!' },
+      { name: '모래의 뼈무리', type: 'spell', cost: 2, spell: 'bone_swarm', vfx: 'fire', desc: '스펠: 적 장군과 그 주변 모든 적에게 2 광역 피해!' },
       { name: '이키르의 지팡이', type: 'artifact', cost: 2, atkBonus: 2, art: 'artifact_staff', desc: '아티팩트 (내구도 3): 아군 장군에게 공격력 +2를 부여합니다.' }
     ]
   },
   lilithe: {
     id: 'lilithe', name: '리리스 블라이트체이서', title: '어비시안 군단 (ABYSSIAN)',
-    color: '#c084fc', sprite: 'lilithe',
+    color: '#c084fc', sprite: 'lilithe', ambient: 'void',
     mechanicTag: '죽음의 주시 (DEATHWATCH) · 그림자 역병',
     mechanicDesc: '유닛이 쓰러질 때마다 능력치가 폭증하며, 그림자 역병 타일을 깔아 전장을 장악합니다.',
     bbsName: '망령의 부름', bbsCost: 1, bbsDesc: '장군 주변 빈 칸에 1/1 돌진 망령 2기 소환',
@@ -527,16 +573,16 @@ const FACTIONS = {
       { name: '그림자 감시자', type: 'minion', cost: 2, atk: 2, hp: 2, sprite: 'wraith', keywords: ['dw_grow'], desc: '죽음의 주시: 전장에서 어떤 유닛이든 죽을 때마다 +1/+1 성장!' },
       { name: '핏빛달 여사제', type: 'minion', cost: 4, atk: 3, hp: 3, sprite: 'wraith', keywords: ['dw_wraith'], desc: '죽음의 주시: 어떤 유닛이든 죽을 때마다 주변에 1/1 망령 소환!' },
       { name: '망령의 군주', type: 'minion', cost: 6, atk: 6, hp: 6, sprite: 'revenant', keywords: ['rush', 'revenant_passive'], desc: '돌진: 적 하수인 공격 시 적 장군에게도 4 피해를 입힙니다!' },
-      { name: '그림자 폭발', type: 'spell', cost: 4, spell: 'shadow_nova', desc: '스펠: 지정한 2x2 구역에 2 피해 & 그림자 역병 타일 생성!' },
-      { name: '영혼 착취', type: 'spell', cost: 2, spell: 'void_pulse', desc: '스펠: 대상 적에게 2 피해를 입히고 아군 장군 체력 +3 회복.' },
-      { name: '악마의 유혹', type: 'spell', cost: 2, spell: 'daemonic_lure', desc: '스펠: 적 하수인에게 1 피해 후 원하는 빈 칸으로 강제 이동!' },
-      { name: '영혼 파쇄 서약', type: 'spell', cost: 2, spell: 'soulshatter', desc: '스펠: 모든 아군 하수인에게 공격력 +2를 부여합니다!' },
+      { name: '그림자 폭발', type: 'spell', cost: 4, spell: 'shadow_nova', vfx: 'void', desc: '스펠: 지정한 2x2 구역에 2 피해 & 그림자 역병 타일 생성!' },
+      { name: '영혼 착취', type: 'spell', cost: 2, spell: 'void_pulse', vfx: 'void', desc: '스펠: 대상 적에게 2 피해를 입히고 아군 장군 체력 +3 회복.' },
+      { name: '악마의 유혹', type: 'spell', cost: 2, spell: 'daemonic_lure', vfx: 'void', desc: '스펠: 적 하수인에게 1 피해 후 원하는 빈 칸으로 강제 이동!' },
+      { name: '영혼 파쇄 서약', type: 'spell', cost: 2, spell: 'soulshatter', vfx: 'void', desc: '스펠: 모든 아군 하수인에게 공격력 +2를 부여합니다!' },
       { name: '유령의 칼날', type: 'artifact', cost: 2, atkBonus: 2, art: 'artifact_void', desc: '아티팩트 (내구도 3): 장군 공격력 +2 & 적 처치 시 체력 +2!' }
     ]
   },
   vaath: {
     id: 'vaath', name: '바스 디 이모탈', title: '마그마르 위상 (MAGMAR)',
-    color: '#10b981', sprite: 'vaath',
+    color: '#10b981', sprite: 'vaath', ambient: 'magmar',
     mechanicTag: '환생 알 (REBIRTH) · 성장 (GROW) · 광란',
     mechanicDesc: '죽으면 0/1 알을 남겨 부활하는 환생과 매 턴 거대해지는 성장 용족으로 전선을 밀어붙입니다.',
     bbsName: '과부하 (Overload)', bbsCost: 1, bbsDesc: '아군 장군의 공격력이 영구적으로 +1 증가',
@@ -545,28 +591,28 @@ const FACTIONS = {
       { name: '대지 보행자', type: 'minion', cost: 3, atk: 3, hp: 3, sprite: 'beast', keywords: ['grow1'], desc: '성장(+1/+1): 내 턴 시작마다 +1/+1씩 영구적으로 거대해집니다!' },
       { name: '베테랑 실리타르', type: 'minion', cost: 4, atk: 4, hp: 4, sprite: 'beast', keywords: ['rebirth'], desc: '환생(Rebirth): 처치해도 알을 깨지 않으면 4/4로 다시 부활!' },
       { name: '마칸토르 전투야수', type: 'minion', cost: 5, atk: 4, hp: 4, sprite: 'beast', keywords: ['rush', 'frenzy'], desc: '돌진 · 광란: 소환 즉시 돌격해 인접 모든 적을 동시 타격!' },
-      { name: '자연의 선택', type: 'spell', cost: 2, spell: 'natural_select', desc: '스펠: 전장에서 공격력이 가장 낮은 하수인 1기 즉시 처치.' },
-      { name: '플라즈마 폭풍', type: 'spell', cost: 4, spell: 'plasma_storm', desc: '스펠: 공격력 3 이하인 모든 하수인을 전장에서 일소!' },
-      { name: '알 변이 (Egg Morph)', type: 'spell', cost: 3, spell: 'egg_morph', desc: '스펠: 적 하수인을 0/1 알로 만들거나, 아군 알을 즉시 부화!' },
-      { name: '대지의 구체', type: 'spell', cost: 3, spell: 'earth_sphere', desc: '스펠: 아군 장군의 체력을 7 회복합니다.' },
+      { name: '자연의 선택', type: 'spell', cost: 2, spell: 'natural_select', vfx: 'void', desc: '스펠: 전장에서 공격력이 가장 낮은 하수인 1기 즉시 처치.' },
+      { name: '플라즈마 폭풍', type: 'spell', cost: 4, spell: 'plasma_storm', vfx: 'lightning', desc: '스펠: 공격력 3 이하인 모든 하수인을 전장에서 일소!' },
+      { name: '알 변이 (Egg Morph)', type: 'spell', cost: 3, spell: 'egg_morph', vfx: 'holy', desc: '스펠: 적 하수인을 0/1 알로 만들거나, 아군 알을 즉시 부화!' },
+      { name: '대지의 구체', type: 'spell', cost: 3, spell: 'earth_sphere', vfx: 'holy', desc: '스펠: 아군 장군의 체력을 7 회복합니다.' },
       { name: '아다만타이트 발톱', type: 'artifact', cost: 3, atkBonus: 3, art: 'artifact_claw', desc: '아티팩트 (내구도 3): 아군 장군에게 공격력 +3 부여!' }
     ]
   },
   faie: {
     id: 'faie', name: '페이 블러드윙', title: '바나르 혈족 (VANAR)',
-    color: '#38bdf8', sprite: 'faie',
+    color: '#38bdf8', sprite: 'faie', ambient: 'snow',
     mechanicTag: '침투 (INFILTRATE) · 빙벽 · 광란 아티팩트',
     mechanicDesc: '적 진영(F~I열)으로 넘어가면 강력해지는 침투 능력과 빙벽 배치로 전장을 봉쇄합니다.',
     bbsName: '전쟁의 새 (Warbird)', bbsCost: 1, bbsDesc: '적 장군과 같은 세로줄(열)의 모든 적에게 2 피해',
     cards: [
       { name: '수정 은신자', type: 'minion', cost: 2, atk: 2, hp: 3, sprite: 'wolf', keywords: ['infiltrate_atk2'], desc: '침투(Infiltrate): 적 진영(F~I열) 배치/진입 시 공격력 +2 (4/3)!' },
       { name: '펜리르 전쟁군주', type: 'minion', cost: 3, atk: 3, hp: 2, sprite: 'wolf', keywords: ['dying_wolf'], desc: '유언: 처치되면 그 자리에 3/2 서리 늑대를 소환합니다!' },
-      { name: '중력의 빙벽', type: 'spell', cost: 2, spell: 'gravity_well', desc: '스펠: 보드 어디든 지정한 칸과 위아래에 0/3 도발 빙벽 3개 배치!' },
+      { name: '중력의 빙벽', type: 'spell', cost: 2, spell: 'gravity_well', vfx: 'ice', desc: '스펠: 보드 어디든 지정한 칸과 위아래에 0/3 도발 빙벽 3개 배치!' },
       { name: '빙하의 파수꾼', type: 'minion', cost: 4, atk: 3, hp: 6, sprite: 'golem', keywords: ['provoke', 'infiltrate_atk2'], desc: '도발 · 침투: 적 진영에서 5/6 도발 괴수로 변모합니다.' },
-      { name: '냉혹한 한기', type: 'spell', cost: 2, spell: 'chromatic_cold', desc: '스펠: 대상 하수인의 능력을 침묵(해제)시키고 2 피해!' },
-      { name: '우박 감옥', type: 'spell', cost: 2, spell: 'hailstone', desc: '스펠: 대상 적 하수인을 원래 주인의 손패로 되돌려 보냅니다!' },
-      { name: '여우의 형상', type: 'spell', cost: 1, spell: 'aspect_fox', desc: '스펠: 대상 적 하수인을 능력 없는 3/3 여우로 변신!' },
-      { name: '눈사태 (Avalanche)', type: 'spell', cost: 4, spell: 'avalanche', desc: '스펠: 전장 왼쪽 절반(A~D열)의 모든 적에게 4 피해 & 기절!' },
+      { name: '냉혹한 한기', type: 'spell', cost: 2, spell: 'chromatic_cold', vfx: 'ice', desc: '스펠: 대상 하수인의 능력을 침묵(해제)시키고 2 피해!' },
+      { name: '우박 감옥', type: 'spell', cost: 2, spell: 'hailstone', vfx: 'ice', desc: '스펠: 대상 적 하수인을 원래 주인의 손패로 되돌려 보냅니다!' },
+      { name: '여우의 형상', type: 'spell', cost: 1, spell: 'aspect_fox', vfx: 'ice', desc: '스펠: 대상 적 하수인을 능력 없는 3/3 여우로 변신!' },
+      { name: '눈사태 (Avalanche)', type: 'spell', cost: 4, spell: 'avalanche', vfx: 'ice', desc: '스펠: 전장 왼쪽 절반(A~D열)의 모든 적에게 4 피해 & 기절!' },
       { name: '콜드바이터', type: 'artifact', cost: 2, atkBonus: 2, art: 'artifact_ice', desc: '아티팩트 (내구도 3): 장군 공격력 +2 및 직접 공격 시 광란(Frenzy)!' }
     ]
   }
@@ -599,6 +645,7 @@ let state = {
   board: [],
   manaOrbs: [],
   creepTiles: [],
+  decals: [],
   turn: 1,
   mulliganSelected: new Set(),
   pMana: 2, pMaxMana: 2,
@@ -620,6 +667,7 @@ let state = {
   logs: [],
   effects: [],
   projectiles: [],
+  screenFlash: { color: '#ffffff', alpha: 0 },
   hitstop: 0,
   shake: 0,
   tick: 0
@@ -637,14 +685,28 @@ function tileCenter(r, c) {
   };
 }
 
+// =========================================================================
+// 시네마틱 VFX & 지면 데칼 스포너 라이브러리
+// =========================================================================
 function triggerShake(amount = 7) { state.shake = Math.max(state.shake, amount); }
+function triggerScreenFlash(color = '#ffffff', alpha = 0.22) {
+  state.screenFlash = { color, alpha };
+}
+function spawnDecal(r, c, kind = 'crack') {
+  state.decals.push({ r, c, kind, t: 0, maxT: 320 });
+  if (state.decals.length > 25) state.decals.shift();
+}
 function spawnFloatText(r, c, text, color) {
   const pt = tileCenter(r, c);
-  state.effects.push({ type: 'text', x: pt.x, y: pt.y - 24, text, color, t: 0, maxT: 64 });
+  state.effects.push({ type: 'text', x: pt.x, y: pt.y - 24, text, color, t: 0, maxT: 68 });
 }
 function spawnArcSlash(r, c, dirX = 1, color = '#fef08a', scale = 1.0) {
   const pt = tileCenter(r, c);
   state.effects.push({ type: 'arcSlash', x: pt.x, y: pt.y, dirX, color, scale, t: 0, maxT: 22 });
+}
+function spawnStarburst(r, c, color = '#fef08a') {
+  const pt = tileCenter(r, c);
+  state.effects.push({ type: 'starburst', x: pt.x, y: pt.y, color, t: 0, maxT: 20 });
 }
 function spawnBackstabX(r, c) {
   const pt = tileCenter(r, c);
@@ -662,13 +724,74 @@ function spawnRing(r, c, color, maxR = 54) {
   const pt = tileCenter(r, c);
   state.effects.push({ type: 'ring', x: pt.x, y: pt.y, color, maxR, t: 0, maxT: 26 });
 }
-function spawnDirectionalSparks(r, c, dirX, color, count = 18) {
+function spawnPillar(r, c, color = '#38bdf8') {
+  const pt = tileCenter(r, c);
+  state.effects.push({ type: 'pillar', x: pt.x, y: pt.y + 18, color, t: 0, maxT: 32 });
+}
+function spawnLightning(r, c, color = '#38bdf8') {
+  const pt = tileCenter(r, c);
+  const segs = [];
+  let cx = pt.x + (Math.random() - 0.5) * 44, cy = pt.y - 250;
+  const steps = 9;
+  for (let i = 1; i <= steps; i++) {
+    const nx = i === steps ? pt.x : pt.x + (Math.random() - 0.5) * 40;
+    const ny = cy + 250 / steps;
+    segs.push({ x1: cx, y1: cy, x2: nx, y2: ny });
+    cx = nx; cy = ny;
+  }
+  state.effects.push({ type: 'lightning', x: pt.x, y: pt.y, segs, color, t: 0, maxT: 24 });
+  spawnDecal(r, c, 'scorch');
+}
+function spawnIceSpikes(r, c) {
+  const pt = tileCenter(r, c);
+  const spikes = Array.from({ length: 7 }, (_, i) => ({
+    dx: (i - 3) * 10,
+    h: 28 + Math.random() * 24,
+    tilt: (i - 3) * 0.13
+  }));
+  state.effects.push({ type: 'iceSpikes', x: pt.x, y: pt.y + 16, spikes, t: 0, maxT: 34 });
+  spawnDecal(r, c, 'frost');
+}
+function spawnVoidVortex(r, c) {
+  const pt = tileCenter(r, c);
+  state.effects.push({ type: 'voidVortex', x: pt.x, y: pt.y, t: 0, maxT: 34 });
+}
+function spawnHealHelix(r, c, color = '#34d399') {
+  const pt = tileCenter(r, c);
+  state.effects.push({ type: 'healHelix', x: pt.x, y: pt.y + 16, color, t: 0, maxT: 36 });
+}
+function spawnDeathBurst(r, c, color = '#f43f5e') {
+  const pt = tileCenter(r, c);
+  for (let i = 0; i < 28; i++) {
+    const ang = Math.random() * Math.PI * 2;
+    const spd = 1.6 + Math.random() * 5.6;
+    state.effects.push({
+      type: 'shard', x: pt.x, y: pt.y,
+      vx: Math.cos(ang) * spd, vy: Math.sin(ang) * spd - 2.4,
+      color: i % 3 === 0 ? '#ffffff' : color, t: 0, maxT: 38
+    });
+  }
+  state.effects.push({ type: 'soulOrb', x: pt.x, y: pt.y, color, t: 0, maxT: 46 });
+  spawnDecal(r, c, 'crack');
+}
+function spawnManaTether(r, c, owner) {
+  const pt = tileCenter(r, c);
+  const destX = owner === 'player' ? 405 : 1010;
+  const destY = 38;
+  for (let i = 0; i < 8; i++) {
+    state.projectiles.push({
+      x: pt.x, y: pt.y, x1: pt.x, y1: pt.y, x2: destX, y2: destY,
+      arcOffset: (i - 3.5) * 28, color: '#38bdf8', t: -i * 2, maxT: 26
+    });
+  }
+}
+function spawnDirectionalSparks(r, c, dirX, color, count = 20) {
   const pt = tileCenter(r, c);
   for (let i = 0; i < count; i++) {
-    const spread = (Math.random() - 0.5) * 1.9;
+    const spread = (Math.random() - 0.5) * 2.0;
     const baseAng = dirX >= 0 ? 0 : Math.PI;
     const ang = baseAng + spread;
-    const spd = 2.4 + Math.random() * 4.5;
+    const spd = 2.5 + Math.random() * 4.8;
     state.effects.push({
       type: 'spark', x: pt.x, y: pt.y,
       vx: Math.cos(ang) * spd, vy: Math.sin(ang) * spd,
@@ -680,7 +803,7 @@ function spawnProjectile(r1, c1, r2, c2, color = '#38bdf8') {
   const p1 = tileCenter(r1, c1), p2 = tileCenter(r2, c2);
   state.projectiles.push({
     x: p1.x, y: p1.y, x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y,
-    color, t: 0, maxT: 14
+    arcOffset: 22, color, t: 0, maxT: 14
   });
 }
 
@@ -702,6 +825,13 @@ function buildDeck30(factionId) {
   return deck;
 }
 
+function createUnitObj(data) {
+  return {
+    ...data,
+    animX: 0, animY: 0, flashT: 0, trail: []
+  };
+}
+
 function startBattle(pFid, eChoice) {
   let eFid = eChoice;
   if (eFid === 'random') {
@@ -713,16 +843,16 @@ function startBattle(pFid, eChoice) {
   const diff = DIFFICULTIES[state.difficultyIdx];
 
   const board = Array.from({ length: ROWS }, () => Array(COLS).fill(null));
-  board[2][0] = {
+  board[2][0] = createUnitObj({
     name: pf.name, owner: 'player', isGeneral: true, sprite: pf.sprite,
     baseAtk: 2, atk: 2, hp: 25, maxHp: 25, keywords: [], stunned: false,
-    movesLeft: 1, attacksLeft: 1, animX: 0, animY: 0, flashT: 0
-  };
-  board[2][8] = {
+    movesLeft: 1, attacksLeft: 1
+  });
+  board[2][8] = createUnitObj({
     name: ef.name, owner: 'enemy', isGeneral: true, sprite: ef.sprite,
     baseAtk: 2, atk: 2, hp: diff.eHp, maxHp: diff.eHp, keywords: [], stunned: false,
-    movesLeft: 1, attacksLeft: 1, animX: 0, animY: 0, flashT: 0
-  };
+    movesLeft: 1, attacksLeft: 1
+  });
 
   const pDeck = buildDeck30(pFid);
   const eDeck = buildDeck30(eFid);
@@ -731,9 +861,9 @@ function startBattle(pFid, eChoice) {
   state.playerFaction = pf;
   state.enemyFaction = ef;
   state.board = board;
-  // 듀얼리스트 II 정통 마나 샘 좌표: E1(0,4), E5(4,4), F3(2,5)
   state.manaOrbs = [{ r: 0, c: 4 }, { r: 4, c: 4 }, { r: 2, c: 5 }];
   state.creepTiles = [];
+  state.decals = [];
   state.turn = 1;
   state.mulliganSelected = new Set();
   state.pMana = 2; state.pMaxMana = 2;
@@ -852,7 +982,6 @@ function getAdjacentProvokers(r, c, owner) {
   return list;
 }
 
-// 듀얼리스트 II 정통 이동: 아군 통과 가능(Friendly Pass-Through) + 적 길막기(Body-blocking) + 비행(Flying)
 function getValidMoves(r, c) {
   const u = state.board[r][c];
   if (!u || u.movesLeft <= 0 || u.stunned || u.keywords.includes('structure')) return [];
@@ -877,7 +1006,6 @@ function getValidMoves(r, c) {
       const key = `${nr},${nc}`;
       if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS || visited.has(key)) continue;
       const occ = state.board[nr][nc];
-      // 적 유닛이 있으면 통과 불가, 아군 유닛은 통과만 가능(최종 착지는 빈 칸만)
       if (occ && occ.owner !== u.owner) continue;
       visited.add(key);
       if (!occ) valid.push({ r: nr, c: nc });
@@ -921,7 +1049,6 @@ function isBackstabPosition(atkU, r1, c1, r2, c2) {
   return atkU.owner === 'player' ? c1 > c2 : c1 < c2;
 }
 
-// 소환 배치 가능 칸 (공수 Airdrop은 보드 전체 빈 칸!)
 function getValidSummonTiles(owner, card = null) {
   if (card && card.keywords && card.keywords.includes('airdrop')) {
     const all = [];
@@ -1006,8 +1133,8 @@ function checkOrbPickup(r, c, owner) {
   const idx = state.manaOrbs.findIndex(o => o.r === r && o.c === c);
   if (idx !== -1) {
     state.manaOrbs.splice(idx, 1);
-    spawnRing(r, c, '#38bdf8', 58);
-    spawnDirectionalSparks(r, c, 0, '#38bdf8', 22);
+    spawnRing(r, c, '#38bdf8', 66);
+    spawnManaTether(r, c, owner);
     spawnFloatText(r, c, '+1 MANA', '#38bdf8');
     if (owner === 'player') { state.pMana++; addLog('💎 플레이어 마나 샘 흡수! (+1 마나)'); }
     else { state.eMana++; addLog('💎 적 AI 마나 샘 흡수! (+1 마나)'); }
@@ -1021,7 +1148,8 @@ function healUnit(r, c, amount) {
   u.hp = Math.min(u.maxHp, u.hp + amount);
   const actual = u.hp - before;
   if (actual > 0) {
-    spawnRing(r, c, '#34d399', 50);
+    spawnRing(r, c, '#34d399', 54);
+    spawnHealHelix(r, c, '#34d399');
     spawnFloatText(r, c, `+${actual} HP`, '#34d399');
   }
 }
@@ -1032,38 +1160,36 @@ function onMinionDied(deadUnit, r, c) {
     if (!dw) continue;
     if (dw.keywords.includes('dw_grow')) {
       dw.atk += 1; dw.hp += 1; dw.maxHp += 1;
+      spawnHealHelix(dr, dc, '#e879f9');
       spawnFloatText(dr, dc, '+1/+1', '#e879f9');
     }
     if (dw.keywords.includes('dw_wraith')) {
       const empties = neighbors8(dr, dc).filter(n => !state.board[n.r][n.c]);
       if (empties.length) {
         const pos = empties[Math.floor(Math.random() * empties.length)];
-        state.board[pos.r][pos.c] = {
+        state.board[pos.r][pos.c] = createUnitObj({
           name: '심연의 망령', owner: dw.owner, isGeneral: false, sprite: 'wraith',
-          atk: 1, hp: 1, maxHp: 1, keywords: [], stunned: false, movesLeft: 0, attacksLeft: 0,
-          animX: 0, animY: 0, flashT: 0
-        };
-        spawnRing(pos.r, pos.c, '#c084fc', 42);
+          atk: 1, hp: 1, maxHp: 1, keywords: [], stunned: false, movesLeft: 0, attacksLeft: 0
+        });
+        spawnPillar(pos.r, pos.c, '#c084fc');
       }
     }
   }
 
   if (deadUnit.keywords.includes('rebirth')) {
-    state.board[r][c] = {
+    state.board[r][c] = createUnitObj({
       name: `${deadUnit.name}의 알`, owner: deadUnit.owner, isGeneral: false, sprite: 'egg',
       atk: 0, hp: 1, maxHp: 1, keywords: ['structure'], stunned: false, movesLeft: 0, attacksLeft: 0,
-      hatchesInto: { ...deadUnit, hp: deadUnit.maxHp, keywords: [...deadUnit.keywords] },
-      animX: 0, animY: 0, flashT: 0
-    };
-    spawnRing(r, c, '#10b981', 48);
+      hatchesInto: { ...deadUnit, hp: deadUnit.maxHp, keywords: [...deadUnit.keywords] }
+    });
+    spawnRing(r, c, '#10b981', 54);
     spawnFloatText(r, c, '🥚 REBIRTH EGG', '#6ee7b7');
   } else if (deadUnit.keywords.includes('dying_wolf')) {
-    state.board[r][c] = {
+    state.board[r][c] = createUnitObj({
       name: '서리 늑대', owner: deadUnit.owner, isGeneral: false, sprite: 'wolf',
-      atk: 3, hp: 2, maxHp: 2, keywords: [], stunned: false, movesLeft: 0, attacksLeft: 0,
-      animX: 0, animY: 0, flashT: 0
-    };
-    spawnRing(r, c, '#38bdf8', 48);
+      atk: 3, hp: 2, maxHp: 2, keywords: [], stunned: false, movesLeft: 0, attacksLeft: 0
+    });
+    spawnIceSpikes(r, c);
   }
 }
 
@@ -1078,12 +1204,17 @@ function dealDamageToUnit(r, c, dmg, color = '#ef4444', dirX = 0) {
   }
   u.hp -= finalDmg;
   u.flashT = 12;
-  u.animX += dirX * 14; // 피격 시 밀려나는 반동
+  u.animX += dirX * 16;
   spawnFloatText(r, c, `-${finalDmg}`, color);
-  spawnDirectionalSparks(r, c, dirX, color, 16);
-  if (finalDmg >= 3) triggerShake(8);
+  spawnDirectionalSparks(r, c, dirX, color, 20);
+  if (finalDmg >= 3) {
+    spawnStarburst(r, c, color);
+    spawnDecal(r, c, 'crack');
+    triggerShake(9);
+  }
   if (u.hp <= 0) {
     addLog(`💥 [${u.name}] 처치됨!`);
+    spawnDeathBurst(r, c, u.owner === 'player' ? '#38bdf8' : '#f43f5e');
     state.board[r][c] = null;
     if (!u.isGeneral) onMinionDied(u, r, c);
     return true;
@@ -1096,22 +1227,18 @@ function moveUnit(r1, c1, r2, c2) {
   state.board[r2][c2] = u;
   state.board[r1][c1] = null;
   u.movesLeft = Math.max(0, u.movesLeft - 1);
-  u.animX = (c1 - c2) * 32;
-  u.animY = (r1 - r2) * 28;
-  spawnRing(r2, c2, '#94a3b8', 36);
+  u.animX = (c1 - c2) * 46;
+  u.animY = (r1 - r2) * 38;
+  spawnRing(r2, c2, '#38bdf8', 40);
   checkOrbPickup(r2, c2, u.owner);
 }
 
-// =========================================================================
-// 초고퀄리티 전투 타격 이펙트 + 동시 반격 시퀀스
-// =========================================================================
 function attackUnit(r1, c1, r2, c2) {
   const atkU = state.board[r1][c1];
   const defU = state.board[r2][c2];
   if (!atkU || !defU) return;
 
   atkU.attacksLeft = Math.max(0, atkU.attacksLeft - 1);
-  // 질풍(Celerity)이 아니면 공격 후 남은 이동력 소진
   if (!atkU.keywords.includes('celerity')) atkU.movesLeft = 0;
 
   const dirX = Math.sign(c2 - c1) || (atkU.owner === 'player' ? 1 : -1);
@@ -1124,31 +1251,32 @@ function attackUnit(r1, c1, r2, c2) {
   const simultaneousCounter = getEffectiveAtk(defU, r2, c2);
   const shouldCounter = !isRanged && !isBlast && !backstab && !defU.keywords.includes('structure');
 
-  // 공격 유형별 차별화된 시각 연출
   if (isBlast) {
     const endCol = dirX > 0 ? COLS - 1 : 0;
     spawnBlastBeam(r1, c1, r1, endCol);
-    triggerShake(9);
+    triggerScreenFlash('#14b8a6', 0.16);
+    triggerShake(10);
   } else if (isRanged) {
     spawnProjectile(r1, c1, r2, c2, '#38bdf8');
     triggerShake(5);
   } else {
-    // 근접 돌진 모션
-    atkU.animX = dirX * 42;
-    atkU.animY = Math.sign(r2 - r1) * 26;
+    atkU.animX = dirX * 50;
+    atkU.animY = Math.sign(r2 - r1) * 32;
     state.hitstop = 3;
     if (backstab) {
       spawnBackstabX(r2, c2);
       spawnFloatText(r2, c2, 'BACKSTAB!', '#f43f5e');
-      triggerShake(10);
+      triggerScreenFlash('#f43f5e', 0.22);
+      triggerShake(11);
     } else if (isFrenzy) {
       spawnWhirlwind(r1, c1);
-      spawnArcSlash(r2, c2, dirX, '#10b981', 1.25);
-      triggerShake(9);
+      spawnArcSlash(r2, c2, dirX, '#10b981', 1.35);
+      triggerScreenFlash('#10b981', 0.15);
+      triggerShake(10);
     } else {
-      spawnArcSlash(r2, c2, dirX, '#fef08a', 1.15);
-      spawnRing(r2, c2, '#fbbf24', 56);
-      triggerShake(7);
+      spawnArcSlash(r2, c2, dirX, '#fef08a', 1.25);
+      spawnRing(r2, c2, '#fbbf24', 60);
+      triggerShake(8);
     }
   }
 
@@ -1172,11 +1300,14 @@ function attackUnit(r1, c1, r2, c2) {
     const target = state.board[v.r][v.c];
     if (!target) continue;
     const wasMinion = !target.isGeneral;
-    if (isBlast) spawnRing(v.r, v.c, '#14b8a6', 52);
+    if (isBlast) spawnRing(v.r, v.c, '#14b8a6', 54);
     if (dealDamageToUnit(v.r, v.c, effAtk, isBlast ? '#14b8a6' : (backstab ? '#f43f5e' : '#ef4444'), dirX)) anyKilled = true;
     if (atkU.keywords.includes('revenant_passive') && wasMinion) {
       const oppG = findGeneral(atkU.owner === 'player' ? 'enemy' : 'player');
-      if (oppG) dealDamageToUnit(oppG.r, oppG.c, 4, '#c084fc', dirX);
+      if (oppG) {
+        spawnVoidVortex(oppG.r, oppG.c);
+        dealDamageToUnit(oppG.r, oppG.c, 4, '#c084fc', dirX);
+      }
     }
   }
 
@@ -1185,9 +1316,8 @@ function attackUnit(r1, c1, r2, c2) {
     if (arts.some(a => a.art === 'artifact_void')) healUnit(r1, c1, 2);
   }
 
-  // 동시 반격: 방어자가 사망했더라도 근접 교전이면 공격자에게 반격 검격이 동시에 작렬
   if (shouldCounter && simultaneousCounter > 0) {
-    spawnArcSlash(r1, c1, -dirX, '#fb923c', 1.0);
+    spawnArcSlash(r1, c1, -dirX, '#fb923c', 1.1);
     dealDamageToUnit(r1, c1, simultaneousCounter, '#fb923c', -dirX);
   }
 
@@ -1196,7 +1326,7 @@ function attackUnit(r1, c1, r2, c2) {
 }
 
 // =========================================================================
-// 5. 수동 전투의 함성(Manual Opening Gambit) & 소환 시스템
+// 5. 수동 전투의 함성 & 소환 · 마법 시스템
 // =========================================================================
 function enterManualGambitIfNeeded(unit, r, c) {
   if (unit.owner !== 'player') return;
@@ -1205,7 +1335,7 @@ function enterManualGambitIfNeeded(unit, r, c) {
     const hasEnemy = state.board.some(row => row.some(u => u && u.owner === 'enemy'));
     if (hasEnemy) {
       state.targetMode = { kind: 'gambit_ping1', src: { r, c } };
-      addLog('🎯 [함성] 1 피해를 입힐 적을 클릭하세요! (우측 건너뛰기 가능)');
+      addLog('🎯 [함성] 1 피해를 입힐 적을 클릭하세요!');
     }
   } else if (kws.includes('gambit_heal2') || kws.includes('gambit_heal4')) {
     const amt = kws.includes('gambit_heal4') ? 4 : 2;
@@ -1232,16 +1362,15 @@ function triggerImmediateGambit(unit, r, c) {
 
   if (unit.keywords.includes('gambit_creep')) {
     if (!state.creepTiles.some(t => t.r === r && t.c === c)) state.creepTiles.push({ r, c, owner });
-    spawnRing(r, c, '#9333ea', 50);
+    spawnVoidVortex(r, c);
   }
   if (unit.keywords.includes('gambit_front3')) {
     const fc = c + (owner === 'player' ? 1 : -1);
     if (fc >= 0 && fc < COLS && state.board[r][fc] && state.board[r][fc].owner === opp) {
-      spawnArcSlash(r, fc, owner === 'player' ? 1 : -1, '#f43f5e', 1.2);
+      spawnArcSlash(r, fc, owner === 'player' ? 1 : -1, '#f43f5e', 1.35);
       dealDamageToUnit(r, fc, 3, '#f43f5e', owner === 'player' ? 1 : -1);
     }
   }
-  // AI용 수동 함성 처리
   if (owner === 'enemy') {
     const g = findGeneral('enemy');
     const pg = findGeneral('player');
@@ -1255,7 +1384,7 @@ function triggerImmediateGambit(unit, r, c) {
     if (unit.keywords.includes('gambit_buff2')) {
       for (let ar = 0; ar < ROWS; ar++) for (let ac = 0; ac < COLS; ac++) {
         const au = state.board[ar][ac];
-        if (au && au.owner === 'enemy' && !au.isGeneral) { au.atk += 2; break; }
+        if (au && au.owner === 'enemy' && !au.isGeneral) { au.atk += 2; spawnHealHelix(ar, ac, '#fbbf24'); break; }
       }
     }
   }
@@ -1266,17 +1395,16 @@ function summonMinion(card, r, c, owner) {
   const rush = card.keywords.includes('rush');
   const celerity = card.keywords.includes('celerity');
   const isStruct = card.keywords.includes('structure');
-  const unit = {
+  const unit = createUnitObj({
     name: card.name, owner, isGeneral: false, sprite: card.sprite,
     atk: card.atk, hp: card.hp, maxHp: card.hp,
     keywords: [...card.keywords], stunned: false,
     movesLeft: (rush && !isStruct) ? (celerity ? 2 : 1) : 0,
-    attacksLeft: (rush && !isStruct) ? (celerity ? 2 : 1) : 0,
-    animX: 0, animY: 0, flashT: 0
-  };
+    attacksLeft: (rush && !isStruct) ? (celerity ? 2 : 1) : 0
+  });
   state.board[r][c] = unit;
-  spawnRing(r, c, '#10b981', 50);
-  spawnDirectionalSparks(r, c, 0, '#10b981', 14);
+  spawnPillar(r, c, owner === 'player' ? '#38bdf8' : '#f43f5e');
+  spawnRing(r, c, '#10b981', 56);
   spawnFloatText(r, c, card.name, '#34d399');
   addLog(`✨ ${owner === 'player' ? '아군' : '적'} [${card.name}] (${COL_LABELS[c]}${r + 1}) 배치!`);
   checkOrbPickup(r, c, owner);
@@ -1291,7 +1419,8 @@ function equipArtifact(card, owner) {
   if (list.length >= 3) list.shift();
   list.push({ name: card.name, atkBonus: card.atkBonus, dur: 3, art: card.art });
   recalcGeneralStats(owner);
-  spawnRing(g.r, g.c, '#fbbf24', 56);
+  spawnPillar(g.r, g.c, '#fbbf24');
+  spawnHealHelix(g.r, g.c, '#fbbf24');
   spawnFloatText(g.r, g.c, `+${card.atkBonus} ATK`, '#fbbf24');
   addLog(`🛡️ ${owner === 'player' ? '아군' : '적'} 장군 [${card.name}] 장착!`);
 }
@@ -1312,6 +1441,7 @@ function triggerSpellSurge(owner) {
     if (!u || u.owner !== owner) continue;
     if (u.keywords.includes('spell_grow')) {
       u.atk += 1; u.hp += 1; u.maxHp += 1;
+      spawnHealHelix(r, c, '#fb923c');
       spawnFloatText(r, c, '+1/+1', '#fb923c');
     }
     if (u.keywords.includes('spell_ping')) {
@@ -1328,11 +1458,12 @@ function castSpell(card, r, c, owner, step2Pos = null) {
   const opp = owner === 'player' ? 'enemy' : 'player';
   const oppG = findGeneral(opp);
   if (g) spawnProjectile(g.r, g.c, r, c, '#c084fc');
-  triggerShake(5);
+  triggerShake(6);
 
   if (sp === 'divine_bond' && t) {
-    t.atk += t.hp; spawnRing(r, c, '#fbbf24', 54); spawnFloatText(r, c, `+${t.hp} ATK!`, '#fbbf24');
+    t.atk += t.hp; spawnPillar(r, c, '#fef08a'); spawnHealHelix(r, c, '#fbbf24'); spawnFloatText(r, c, `+${t.hp} ATK!`, '#fbbf24');
   } else if (sp === 'holy_immolation' && t) {
+    spawnPillar(r, c, '#fef08a'); triggerScreenFlash('#fef08a', 0.22);
     healUnit(r, c, 4);
     for (const n of neighbors8(r, c)) {
       const adj = state.board[n.r][n.c];
@@ -1341,34 +1472,45 @@ function castSpell(card, r, c, owner, step2Pos = null) {
   } else if (sp === 'martyrdom' && t) {
     const heal = t.hp;
     const tGen = findGeneral(t.owner);
-    state.board[r][c] = null; spawnRing(r, c, '#fef08a', 55);
+    spawnDeathBurst(r, c, '#fef08a');
+    state.board[r][c] = null;
     if (tGen) healUnit(tGen.r, tGen.c, heal);
   } else if (sp === 'tempest') {
+    triggerScreenFlash('#38bdf8', 0.24);
     for (let tr = 0; tr < ROWS; tr++) for (let tc = 0; tc < COLS; tc++) {
-      if (state.board[tr][tc]) dealDamageToUnit(tr, tc, 2, '#fbbf24', 0);
+      if (state.board[tr][tc]) {
+        spawnLightning(tr, tc, '#38bdf8');
+        dealDamageToUnit(tr, tc, 2, '#fbbf24', 0);
+      }
     }
   } else if (sp === 'phoenix_fire' && t) {
+    spawnStarburst(r, c, '#f97316');
+    spawnDecal(r, c, 'scorch');
     dealDamageToUnit(r, c, 3, '#f97316', owner === 'player' ? 1 : -1); drawCards(owner, 1);
   } else if (sp === 'inner_focus' && t) {
     const cel = t.keywords.includes('celerity');
     t.movesLeft = cel ? 2 : 1; t.attacksLeft = cel ? 2 : 1; t.stunned = false;
-    spawnRing(r, c, '#38bdf8', 54); spawnFloatText(r, c, 'REACTIVATE!', '#38bdf8');
+    spawnPillar(r, c, '#38bdf8'); spawnHealHelix(r, c, '#38bdf8'); spawnFloatText(r, c, 'REACTIVATE!', '#38bdf8');
   } else if (sp === 'juxtaposition' && t && step2Pos) {
     const t2 = state.board[step2Pos.r][step2Pos.c];
     state.board[step2Pos.r][step2Pos.c] = t;
     state.board[r][c] = t2;
-    spawnRing(r, c, '#f43f5e', 48); spawnRing(step2Pos.r, step2Pos.c, '#f43f5e', 48);
+    spawnVoidVortex(r, c); spawnVoidVortex(step2Pos.r, step2Pos.c);
   } else if (sp === 'ghost_lightning') {
     for (let er = 0; er < ROWS; er++) for (let ec = 0; ec < COLS; ec++) {
       const eu = state.board[er][ec];
-      if (eu && eu.owner !== owner && !eu.isGeneral) dealDamageToUnit(er, ec, 1, '#f43f5e', 0);
+      if (eu && eu.owner !== owner && !eu.isGeneral) {
+        spawnLightning(er, ec, '#f43f5e');
+        dealDamageToUnit(er, ec, 1, '#f43f5e', 0);
+      }
     }
   } else if (sp === 'scions_wish' && t) {
     t.atk += 2; t.hp += 2; t.maxHp += 2;
-    spawnRing(r, c, '#14b8a6', 50); spawnFloatText(r, c, '+2/+2', '#14b8a6'); drawCards(owner, 1);
+    spawnPillar(r, c, '#14b8a6'); spawnHealHelix(r, c, '#14b8a6'); spawnFloatText(r, c, '+2/+2', '#14b8a6'); drawCards(owner, 1);
   } else if (sp === 'entropic_decay' && t) {
-    spawnRing(r, c, '#14b8a6', 58); state.board[r][c] = null;
+    spawnLightning(r, c, '#14b8a6'); spawnDeathBurst(r, c, '#14b8a6'); state.board[r][c] = null;
   } else if (sp === 'stars_fury') {
+    triggerScreenFlash('#14b8a6', 0.18);
     const dir = owner === 'player' ? -1 : 1;
     for (let er = 0; er < ROWS; er++) for (let ec = 0; ec < COLS; ec++) {
       const eu = state.board[er][ec];
@@ -1380,69 +1522,80 @@ function castSpell(card, r, c, owner, step2Pos = null) {
       }
     }
   } else if (sp === 'bone_swarm' && oppG) {
+    spawnStarburst(oppG.r, oppG.c, '#d97706');
+    spawnDecal(oppG.r, oppG.c, 'scorch');
     dealDamageToUnit(oppG.r, oppG.c, 2, '#d97706', 0);
     for (const n of neighbors8(oppG.r, oppG.c)) {
       const adj = state.board[n.r][n.c];
       if (adj && adj.owner !== owner) dealDamageToUnit(n.r, n.c, 2, '#d97706', 0);
     }
   } else if (sp === 'shadow_nova') {
+    triggerScreenFlash('#9333ea', 0.22);
     for (let dr = 0; dr <= 1; dr++) for (let dc = 0; dc <= 1; dc++) {
       const nr = Math.min(ROWS - 1, r + dr), nc = Math.min(COLS - 1, c + dc);
       if (!state.creepTiles.some(ct => ct.r === nr && ct.c === nc)) state.creepTiles.push({ r: nr, c: nc, owner });
+      spawnVoidVortex(nr, nc);
       const eu = state.board[nr][nc];
       if (eu && eu.owner !== owner) dealDamageToUnit(nr, nc, 2, '#9333ea', 0);
     }
   } else if (sp === 'void_pulse' && t) {
+    spawnVoidVortex(r, c);
     dealDamageToUnit(r, c, 2, '#c084fc', 0);
     if (g) healUnit(g.r, g.c, 3);
   } else if (sp === 'daemonic_lure' && t && step2Pos) {
+    spawnVoidVortex(r, c);
     const dead = dealDamageToUnit(r, c, 1, '#c084fc', 0);
     if (!dead && state.board[r][c]) {
       state.board[step2Pos.r][step2Pos.c] = state.board[r][c]; state.board[r][c] = null;
-      spawnRing(step2Pos.r, step2Pos.c, '#c084fc', 46);
+      spawnVoidVortex(step2Pos.r, step2Pos.c);
     }
   } else if (sp === 'soulshatter') {
+    triggerScreenFlash('#c084fc', 0.16);
     for (let ar = 0; ar < ROWS; ar++) for (let ac = 0; ac < COLS; ac++) {
       const au = state.board[ar][ac];
-      if (au && au.owner === owner && !au.isGeneral) { au.atk += 2; spawnFloatText(ar, ac, '+2 ATK', '#e879f9'); }
+      if (au && au.owner === owner && !au.isGeneral) { au.atk += 2; spawnHealHelix(ar, ac, '#e879f9'); spawnFloatText(ar, ac, '+2 ATK', '#e879f9'); }
     }
   } else if (sp === 'natural_select' && t) {
-    spawnRing(r, c, '#10b981', 55); state.board[r][c] = null;
+    spawnVoidVortex(r, c); spawnDeathBurst(r, c, '#10b981'); state.board[r][c] = null;
   } else if (sp === 'plasma_storm') {
+    triggerScreenFlash('#10b981', 0.24);
     for (let mr = 0; mr < ROWS; mr++) for (let mc = 0; mc < COLS; mc++) {
       const mu = state.board[mr][mc];
-      if (mu && !mu.isGeneral && getEffectiveAtk(mu, mr, mc) <= 3) { spawnRing(mr, mc, '#10b981', 50); state.board[mr][mc] = null; }
+      if (mu && !mu.isGeneral && getEffectiveAtk(mu, mr, mc) <= 3) {
+        spawnLightning(mr, mc, '#10b981'); spawnDeathBurst(mr, mc, '#10b981'); state.board[mr][mc] = null;
+      }
     }
   } else if (sp === 'egg_morph' && t) {
     if (t.hatchesInto) {
       const cel = t.hatchesInto.keywords.includes('celerity');
-      state.board[r][c] = { ...t.hatchesInto, movesLeft: cel ? 2 : 1, attacksLeft: cel ? 2 : 1, animX: 0, animY: 0, flashT: 0 };
-      spawnRing(r, c, '#10b981', 55);
+      state.board[r][c] = createUnitObj({ ...t.hatchesInto, movesLeft: cel ? 2 : 1, attacksLeft: cel ? 2 : 1 });
+      spawnPillar(r, c, '#10b981');
       spawnFloatText(r, c, 'HATCHED!', '#6ee7b7');
     } else {
-      state.board[r][c] = {
+      state.board[r][c] = createUnitObj({
         name: '변이된 알', owner: t.owner, isGeneral: false, sprite: 'egg',
-        atk: 0, hp: 1, maxHp: 1, keywords: ['structure'], stunned: false, movesLeft: 0, attacksLeft: 0,
-        animX: 0, animY: 0, flashT: 0
-      };
+        atk: 0, hp: 1, maxHp: 1, keywords: ['structure'], stunned: false, movesLeft: 0, attacksLeft: 0
+      });
+      spawnRing(r, c, '#10b981', 50);
       spawnFloatText(r, c, 'EGG MORPH!', '#10b981');
     }
   } else if (sp === 'earth_sphere' && g) {
+    spawnPillar(g.r, g.c, '#10b981');
     healUnit(g.r, g.c, 7);
   } else if (sp === 'gravity_well') {
     for (const dr of [-1, 0, 1]) {
       const nr = r + dr;
       if (nr >= 0 && nr < ROWS && !state.board[nr][c]) {
-        state.board[nr][c] = {
+        state.board[nr][c] = createUnitObj({
           name: '빙하의 방벽', owner, isGeneral: false, sprite: 'wall',
-          atk: 0, hp: 3, maxHp: 3, keywords: ['structure', 'provoke'], stunned: false, movesLeft: 0, attacksLeft: 0,
-          animX: 0, animY: 0, flashT: 0
-        };
-        spawnRing(nr, c, '#38bdf8', 42);
+          atk: 0, hp: 3, maxHp: 3, keywords: ['structure', 'provoke'], stunned: false, movesLeft: 0, attacksLeft: 0
+        });
+        spawnIceSpikes(nr, c);
       }
     }
   } else if (sp === 'chromatic_cold' && t) {
     t.keywords = []; t.hatchesInto = null;
+    spawnIceSpikes(r, c);
     spawnFloatText(r, c, 'DISPELLED!', '#bae6fd'); dealDamageToUnit(r, c, 2, '#38bdf8', 0);
   } else if (sp === 'hailstone' && t) {
     const tHand = t.owner === 'player' ? state.pHand : state.eHand;
@@ -1452,16 +1605,17 @@ function castSpell(card, r, c, owner, step2Pos = null) {
         atk: t.atk, hp: t.maxHp, sprite: t.sprite, keywords: [...t.keywords], desc: '우박 감옥에서 귀환한 하수인입니다.'
       });
     }
-    spawnRing(r, c, '#38bdf8', 50); state.board[r][c] = null;
+    spawnIceSpikes(r, c); state.board[r][c] = null;
   } else if (sp === 'aspect_fox' && t) {
-    state.board[r][c] = {
+    state.board[r][c] = createUnitObj({
       name: '서리 여우', owner: t.owner, isGeneral: false, sprite: 'wolf',
-      atk: 3, hp: 3, maxHp: 3, keywords: [], stunned: false, movesLeft: 0, attacksLeft: 0,
-      animX: 0, animY: 0, flashT: 0
-    };
-    spawnRing(r, c, '#38bdf8', 46);
+      atk: 3, hp: 3, maxHp: 3, keywords: [], stunned: false, movesLeft: 0, attacksLeft: 0
+    });
+    spawnIceSpikes(r, c);
   } else if (sp === 'avalanche') {
+    triggerScreenFlash('#38bdf8', 0.25);
     for (let ar = 0; ar < ROWS; ar++) for (let ac = 0; ac <= 3; ac++) {
+      spawnIceSpikes(ar, ac);
       const au = state.board[ar][ac];
       if (au && au.owner !== owner) { au.stunned = true; dealDamageToUnit(ar, ac, 4, '#38bdf8', 0); }
     }
@@ -1479,13 +1633,14 @@ function processTurnStartEffects(owner) {
 
     if (u.hatchesInto) {
       const cel = u.hatchesInto.keywords.includes('celerity');
-      state.board[r][c] = { ...u.hatchesInto, movesLeft: cel ? 2 : 1, attacksLeft: cel ? 2 : 1, animX: 0, animY: 0, flashT: 0 };
-      spawnRing(r, c, '#10b981', 54);
+      state.board[r][c] = createUnitObj({ ...u.hatchesInto, movesLeft: cel ? 2 : 1, attacksLeft: cel ? 2 : 1 });
+      spawnPillar(r, c, '#10b981');
       spawnFloatText(r, c, '🥚 HATCHED!', '#6ee7b7');
       continue;
     }
     if (u.keywords.includes('grow1')) {
       u.atk += 1; u.hp += 1; u.maxHp += 1;
+      spawnHealHelix(r, c, '#6ee7b7');
       spawnFloatText(r, c, 'GROW +1/+1', '#6ee7b7');
     }
     if (u.keywords.includes('spawn_dervish')) {
@@ -1505,6 +1660,7 @@ function processTurnEndEffects(owner) {
       if (ct.owner !== owner) continue;
       const victim = state.board[ct.r][ct.c];
       if (victim && victim.owner !== owner) {
+        spawnVoidVortex(ct.r, ct.c);
         dealDamageToUnit(ct.r, ct.c, myCreepCount, '#c084fc', 0);
       }
     }
@@ -1526,7 +1682,7 @@ function triggerBBS(owner) {
 
   if (fac.id === 'vaath') {
     g.unit.baseAtk += 1; recalcGeneralStats(owner);
-    spawnRing(g.r, g.c, '#10b981', 50); spawnFloatText(g.r, g.c, '+1 ATK', '#10b981');
+    spawnPillar(g.r, g.c, '#10b981'); spawnHealHelix(g.r, g.c, '#10b981'); spawnFloatText(g.r, g.c, '+1 ATK', '#10b981');
   } else if (fac.id === 'zirix') {
     const empty = neighbors8(g.r, g.c).filter(n => !state.board[n.r][n.c]);
     if (!empty.length) return false;
@@ -1542,6 +1698,7 @@ function triggerBBS(owner) {
     const oppG = findGeneral(owner === 'player' ? 'enemy' : 'player');
     if (!oppG) return false;
     for (let r = 0; r < ROWS; r++) {
+      spawnLightning(r, oppG.c, '#38bdf8');
       const u = state.board[r][oppG.c];
       if (u && u.owner !== owner) dealDamageToUnit(r, oppG.c, 2, '#38bdf8', 0);
     }
@@ -1556,6 +1713,7 @@ function triggerBBS(owner) {
       const allies = neighbors8(g.r, g.c).map(n => ({ ...n, u: state.board[n.r][n.c] })).filter(x => x.u && x.u.owner === 'enemy');
       if (!allies.length) return false;
       allies[0].u.atk += 2;
+      spawnHealHelix(allies[0].r, allies[0].c, '#fbbf24');
     }
   } else if (fac.id === 'kaleos') {
     if (owner === 'player') {
@@ -1795,7 +1953,6 @@ canvas.addEventListener('click', (e) => {
   }
   if (state.aiBusy) return;
 
-  // 타겟 지정 모드 건너뛰기 버튼
   if (state.targetMode && inside(x, y, 1135, 585, 115, 115)) {
     state.targetMode = null;
     addLog('⏭️ 대상 지정 건너뜀');
@@ -1871,7 +2028,7 @@ canvas.addEventListener('click', (e) => {
       if (tm.kind === 'gambit_buff2') {
         if (u && u.owner === 'player' && !u.isGeneral) {
           u.atk += 2;
-          spawnRing(r, c, '#fbbf24', 48);
+          spawnHealHelix(r, c, '#fbbf24');
           spawnFloatText(r, c, '+2 ATK', '#fbbf24');
           state.targetMode = null;
         }
@@ -1890,7 +2047,7 @@ canvas.addEventListener('click', (e) => {
           state.board[r][c] = state.board[ep.r][ep.c];
           state.board[ep.r][ep.c] = null;
           spawnProjectile(ep.r, ep.c, r, c, '#38bdf8');
-          spawnRing(r, c, '#38bdf8', 48);
+          spawnVoidVortex(r, c);
           state.targetMode = null;
         }
         return;
@@ -1899,7 +2056,7 @@ canvas.addEventListener('click', (e) => {
         const pg = findGeneral('player');
         if (u && u.owner === 'player' && !u.isGeneral && pg && Math.abs(r - pg.r) <= 1 && Math.abs(c - pg.c) <= 1) {
           u.atk += 2; state.pMana -= state.playerFaction.bbsCost; state.pBbsCd = 2;
-          spawnFloatText(r, c, '+2 ATK', '#fbbf24'); spawnRing(r, c, '#fbbf24', 48);
+          spawnHealHelix(r, c, '#fbbf24'); spawnFloatText(r, c, '+2 ATK', '#fbbf24');
         }
         state.targetMode = null; return;
       }
@@ -1915,7 +2072,7 @@ canvas.addEventListener('click', (e) => {
         if (!u && Math.abs(r - fp.r) + Math.abs(c - fp.c) <= 2) {
           state.board[r][c] = state.board[fp.r][fp.c]; state.board[fp.r][fp.c] = null;
           state.pMana -= state.playerFaction.bbsCost; state.pBbsCd = 2;
-          spawnRing(r, c, '#f43f5e', 48); checkOrbPickup(r, c, 'player');
+          spawnVoidVortex(r, c); checkOrbPickup(r, c, 'player');
         }
         state.targetMode = null; return;
       }
@@ -1978,7 +2135,7 @@ canvas.addEventListener('click', (e) => {
 });
 
 // =========================================================================
-// 8. 고밀도 픽셀 & 고타격감 이펙트 렌더링 엔진
+// 8. 고해상도 아트 · 2.5D 전장 · 전술 예측 · 다중 레이어 이펙트 렌더링
 // =========================================================================
 function roundRect(x, y, w, h, r, fill, stroke, lw = 2) {
   ctx.beginPath(); ctx.roundRect(x, y, w, h, r);
@@ -1986,10 +2143,10 @@ function roundRect(x, y, w, h, r, fill, stroke, lw = 2) {
   if (stroke) { ctx.lineWidth = lw; ctx.strokeStyle = stroke; ctx.stroke(); }
 }
 
-function drawUnitSprite(key, cx, cy, size, flipX = false, flash = false, alpha = 1.0) {
+function drawUnitSprite(key, cx, cy, size, flipX = false, mode = 'normal', alpha = 1.0) {
   const sp = SPRITES[key] || SPRITES.paladin;
-  const frameIdx = Math.floor(state.tick / 24) % 2;
-  const img = flash ? sp.flash : (frameIdx === 0 ? sp.f0 : sp.f1);
+  const frameIdx = Math.floor(state.tick / 14) % 4;
+  const img = mode === 'flash' ? sp.flash : (mode === 'ghost' ? sp.ghost : sp.frames[frameIdx]);
   ctx.save();
   ctx.globalAlpha = alpha;
   ctx.imageSmoothingEnabled = false;
@@ -1999,65 +2156,170 @@ function drawUnitSprite(key, cx, cy, size, flipX = false, flash = false, alpha =
   ctx.restore();
 }
 
-function drawCardArt(card, x, y, w, h) {
+function drawCardArt(card, x, y, w, h, isHovered = false) {
   ctx.save();
-  ctx.beginPath(); ctx.roundRect(x, y, w, h, 4); ctx.clip();
-  const grad = ctx.createLinearGradient(x, y, x, y + h);
-  if (card.type === 'spell') { grad.addColorStop(0, '#3b0764'); grad.addColorStop(1, '#090d16'); }
-  else if (card.type === 'artifact') { grad.addColorStop(0, '#78350f'); grad.addColorStop(1, '#090d16'); }
-  else { grad.addColorStop(0, '#0f172a'); grad.addColorStop(1, '#1e293b'); }
-  ctx.fillStyle = grad; ctx.fillRect(x, y, w, h);
-
+  ctx.beginPath(); ctx.roundRect(x, y, w, h, 5); ctx.clip();
   const cx = x + w / 2, cy = y + h / 2;
+
+  const grad = ctx.createLinearGradient(x, y, x, y + h);
   if (card.type === 'spell') {
-    ctx.strokeStyle = 'rgba(232, 121, 249, 0.55)'; ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.arc(cx, cy, 24, 0, Math.PI * 2); ctx.stroke();
-    ctx.strokeStyle = '#38bdf8';
-    ctx.beginPath(); ctx.moveTo(cx, cy - 20); ctx.lineTo(cx + 18, cy + 10); ctx.lineTo(cx - 18, cy + 10); ctx.closePath(); ctx.stroke();
-    const rg = ctx.createRadialGradient(cx, cy, 2, cx, cy, 20);
-    rg.addColorStop(0, '#ffffff'); rg.addColorStop(0.45, '#c084fc'); rg.addColorStop(1, 'rgba(192,132,252,0)');
-    ctx.fillStyle = rg; ctx.beginPath(); ctx.arc(cx, cy, 20, 0, Math.PI * 2); ctx.fill();
+    const vfx = card.vfx || 'void';
+    if (vfx === 'fire') { grad.addColorStop(0, '#9a3412'); grad.addColorStop(1, '#070a12'); }
+    else if (vfx === 'ice') { grad.addColorStop(0, '#075985'); grad.addColorStop(1, '#070a12'); }
+    else if (vfx === 'holy') { grad.addColorStop(0, '#854d0e'); grad.addColorStop(1, '#070a12'); }
+    else if (vfx === 'lightning') { grad.addColorStop(0, '#1d4ed8'); grad.addColorStop(1, '#070a12'); }
+    else { grad.addColorStop(0, '#581c87'); grad.addColorStop(1, '#070a12'); }
+    ctx.fillStyle = grad; ctx.fillRect(x, y, w, h);
+
+    if (vfx === 'fire') {
+      const fg = ctx.createRadialGradient(cx, cy + 4, 2, cx, cy, 34);
+      fg.addColorStop(0, '#ffffff'); fg.addColorStop(0.4, '#fef08a'); fg.addColorStop(0.75, '#f97316'); fg.addColorStop(1, 'rgba(249,115,22,0)');
+      ctx.fillStyle = fg; ctx.beginPath(); ctx.arc(cx, cy, 34, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = '#fde047'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(cx, cy, 18, 0, Math.PI * 2); ctx.stroke();
+    } else if (vfx === 'ice') {
+      ctx.fillStyle = '#bae6fd';
+      for (let i = -3; i <= 3; i++) {
+        const sh = (4 - Math.abs(i)) * 9;
+        ctx.beginPath(); ctx.moveTo(cx + i * 10 - 4, y + h); ctx.lineTo(cx + i * 10, cy + 16 - sh); ctx.lineTo(cx + i * 10 + 4, y + h); ctx.fill();
+      }
+      ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(cx, cy - 22); ctx.lineTo(cx, cy + 10); ctx.stroke();
+    } else if (vfx === 'lightning') {
+      ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 5;
+      ctx.beginPath(); ctx.moveTo(cx + 12, y + 4); ctx.lineTo(cx - 8, cy - 2); ctx.lineTo(cx + 8, cy + 4); ctx.lineTo(cx - 10, y + h - 4); ctx.stroke();
+      ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(cx + 12, y + 4); ctx.lineTo(cx - 8, cy - 2); ctx.lineTo(cx + 8, cy + 4); ctx.lineTo(cx - 10, y + h - 4); ctx.stroke();
+    } else if (vfx === 'holy') {
+      const hg = ctx.createLinearGradient(cx - 22, y, cx + 22, y);
+      hg.addColorStop(0, 'rgba(254,240,138,0)'); hg.addColorStop(0.5, 'rgba(254,240,138,0.85)'); hg.addColorStop(1, 'rgba(254,240,138,0)');
+      ctx.fillStyle = hg; ctx.fillRect(cx - 22, y, 44, h);
+      ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(cx, cy, 18, 0, Math.PI * 2); ctx.stroke();
+    } else {
+      ctx.strokeStyle = '#e879f9'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(cx, cy, 22, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(cx, cy, 12, 0, Math.PI * 2); ctx.stroke();
+      ctx.fillStyle = '#f0abfc';
+      ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI * 2); ctx.fill();
+    }
   } else if (card.type === 'artifact') {
-    const rg = ctx.createRadialGradient(cx, cy, 4, cx, cy, 26);
-    rg.addColorStop(0, '#fef08a'); rg.addColorStop(0.55, '#f59e0b'); rg.addColorStop(1, 'rgba(245,158,11,0)');
-    ctx.fillStyle = rg; ctx.beginPath(); ctx.arc(cx, cy, 26, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = '#fef08a'; ctx.lineWidth = 2;
-    ctx.strokeRect(cx - 14, cy - 14, 28, 28);
+    grad.addColorStop(0, '#92400e'); grad.addColorStop(1, '#070a12');
+    ctx.fillStyle = grad; ctx.fillRect(x, y, w, h);
+    const rg = ctx.createRadialGradient(cx, cy, 3, cx, cy, 32);
+    rg.addColorStop(0, '#ffffff'); rg.addColorStop(0.45, '#fbbf24'); rg.addColorStop(1, 'rgba(245,158,11,0)');
+    ctx.fillStyle = rg; ctx.beginPath(); ctx.arc(cx, cy, 32, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#fef08a'; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.moveTo(cx, cy - 24); ctx.lineTo(cx + 20, cy); ctx.lineTo(cx, cy + 24); ctx.lineTo(cx - 20, cy); ctx.closePath(); ctx.stroke();
   } else {
-    ctx.fillStyle = 'rgba(0,0,0,0.55)';
-    ctx.beginPath(); ctx.ellipse(cx, y + h - 6, 20, 5, 0, 0, Math.PI * 2); ctx.fill();
-    drawUnitSprite(card.sprite, cx, cy + 2, 58, false, false);
+    grad.addColorStop(0, '#0f172a'); grad.addColorStop(1, '#1e293b');
+    ctx.fillStyle = grad; ctx.fillRect(x, y, w, h);
+    const pg = ctx.createRadialGradient(cx, y + h - 8, 2, cx, y + h - 8, 36);
+    pg.addColorStop(0, 'rgba(56, 189, 248, 0.42)'); pg.addColorStop(1, 'rgba(56, 189, 248, 0)');
+    ctx.fillStyle = pg; ctx.fillRect(x, y, w, h);
+    ctx.fillStyle = 'rgba(0,0,0,0.65)';
+    ctx.beginPath(); ctx.ellipse(cx, y + h - 7, 24, 5, 0, 0, Math.PI * 2); ctx.fill();
+    drawUnitSprite(card.sprite, cx, cy + 2, 62, false, 'normal');
+  }
+
+  // 카드 호버 시 홀로그램 광택 스윕
+  if (isHovered) {
+    const sweep = ((state.tick * 4) % (w + h + 80)) - 40;
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
+    ctx.lineWidth = 14;
+    ctx.beginPath();
+    ctx.moveTo(x + sweep - 30, y);
+    ctx.lineTo(x + sweep + 30, y + h);
+    ctx.stroke();
   }
   ctx.restore();
 }
 
 function drawAtmosphereBg() {
+  const ambient = (state.playerFaction && state.playerFaction.ambient) || FACTIONS[state.selectedFaction].ambient;
+
+  // 1. 깊은 성운 스카이 그라데이션
   const bg = ctx.createLinearGradient(0, 0, 0, H);
-  bg.addColorStop(0, '#02040a'); bg.addColorStop(0.52, '#070f20'); bg.addColorStop(1, '#030408');
+  bg.addColorStop(0, '#020308');
+  bg.addColorStop(0.45, '#081226');
+  bg.addColorStop(0.85, '#040914');
+  bg.addColorStop(1, '#010205');
   ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
 
-  const sun = ctx.createRadialGradient(W / 2, 235, 20, W / 2, 235, 540);
-  sun.addColorStop(0, 'rgba(56, 189, 248, 0.16)'); sun.addColorStop(1, 'rgba(2, 4, 10, 0)');
-  ctx.fillStyle = sun; ctx.fillRect(0, 0, W, H);
+  // 2. 천상 신전 빛줄기 (Volumetric God-Rays)
+  ctx.save();
+  for (let i = -2; i <= 2; i++) {
+    const rx = W / 2 + i * 165;
+    const rg = ctx.createLinearGradient(W / 2, 0, rx, 540);
+    rg.addColorStop(0, 'rgba(56, 189, 248, 0.08)');
+    rg.addColorStop(1, 'rgba(56, 189, 248, 0)');
+    ctx.fillStyle = rg;
+    ctx.beginPath();
+    ctx.moveTo(W / 2 - 42, 0);
+    ctx.lineTo(W / 2 + 42, 0);
+    ctx.lineTo(rx + 95, 540);
+    ctx.lineTo(rx - 95, 540);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.restore();
 
+  // 3. 회전하는 천문 아스트롤라베 룬 링
+  ctx.save();
+  ctx.translate(W / 2 - 140, 320);
+  ctx.rotate(state.tick * 0.0018);
+  ctx.strokeStyle = 'rgba(56, 189, 248, 0.09)';
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(0, 0, 275, 0, Math.PI * 2); ctx.stroke();
+  ctx.beginPath(); ctx.arc(0, 0, 220, 0, Math.PI * 2); ctx.stroke();
+  ctx.strokeRect(-195, -195, 390, 390);
+  ctx.rotate(Math.PI / 4);
+  ctx.strokeRect(-195, -195, 390, 390);
+  ctx.restore();
+
+  // 4. 패럴랙스 부유 신전 기둥 & 룬 에너지 라인
   const pillars = [
-    { x: 85, y: 165, w: 50, h: 195, spd: 0.02 },
-    { x: 205, y: 110, w: 34, h: 135, spd: 0.03 },
-    { x: 1040, y: 115, w: 36, h: 140, spd: 0.025 },
-    { x: 1145, y: 175, w: 52, h: 200, spd: 0.018 }
+    { x: 24, y: 150, w: 30, h: 250, spd: 0.018 },
+    { x: 904, y: 140, w: 28, h: 260, spd: 0.022 },
+    { x: 1236, y: 165, w: 34, h: 240, spd: 0.016 }
   ];
   pillars.forEach((p, idx) => {
-    const py = p.y + Math.sin(state.tick * p.spd + idx) * 8;
-    ctx.fillStyle = '#091124'; ctx.fillRect(p.x, py, p.w, p.h);
+    const py = p.y + Math.sin(state.tick * p.spd + idx) * 9;
+    const pg = ctx.createLinearGradient(p.x, py, p.x + p.w, py + p.h);
+    pg.addColorStop(0, '#101d38'); pg.addColorStop(1, '#040812');
+    ctx.fillStyle = pg; ctx.fillRect(p.x, py, p.w, p.h);
     ctx.strokeStyle = 'rgba(56, 189, 248, 0.28)'; ctx.strokeRect(p.x, py, p.w, p.h);
-    ctx.fillStyle = 'rgba(56, 189, 248, 0.5)'; ctx.fillRect(p.x + p.w / 2 - 1, py + 16, 2, p.h - 32);
+    ctx.fillStyle = 'rgba(56, 189, 248, 0.6)';
+    ctx.fillRect(p.x + p.w / 2 - 1, py + 16, 2, p.h - 32);
   });
 
-  for (let i = 0; i < 55; i++) {
-    const px = (i * 173 + state.tick * 0.22) % W;
-    const py = (H - ((i * 97 + state.tick * 0.45) % H));
-    ctx.fillStyle = i % 2 === 0 ? 'rgba(56,189,248,0.45)' : 'rgba(251,191,36,0.35)';
-    ctx.fillRect(px, py, 2, 2);
+  // 5. 진영별 환경 파티클 (눈송이, 불티, 모래 입자, 심연 포자, 에메랄드 에너지)
+  for (let i = 0; i < 70; i++) {
+    let px, py, col;
+    if (ambient === 'snow') {
+      px = (i * 173 + Math.sin(state.tick * 0.02 + i) * 28) % W;
+      py = (i * 97 + state.tick * 0.75) % H;
+      col = 'rgba(186, 230, 253, 0.55)';
+    } else if (ambient === 'sand') {
+      px = (i * 173 + state.tick * 1.1) % W;
+      py = (i * 97 + Math.sin(state.tick * 0.02 + i) * 16) % H;
+      col = 'rgba(94, 234, 212, 0.42)';
+    } else if (ambient === 'void') {
+      px = (i * 173 + Math.sin(state.tick * 0.015 + i) * 22) % W;
+      py = H - ((i * 97 + state.tick * 0.35) % H);
+      col = 'rgba(192, 132, 252, 0.48)';
+    } else if (ambient === 'magmar') {
+      px = (i * 173 + Math.sin(state.tick * 0.015 + i) * 20) % W;
+      py = H - ((i * 97 + state.tick * 0.45) % H);
+      col = 'rgba(16, 185, 129, 0.48)';
+    } else {
+      px = (i * 173 + Math.sin(state.tick * 0.015 + i) * 20) % W;
+      py = H - ((i * 97 + state.tick * 0.52) % H);
+      col = ambient === 'ember' ? 'rgba(244, 63, 94, 0.52)' : 'rgba(251, 191, 36, 0.48)';
+    }
+    const sz = i % 5 === 0 ? 3 : 2;
+    ctx.fillStyle = col;
+    ctx.fillRect(px, py, sz, sz);
   }
 }
 
@@ -2065,26 +2327,26 @@ function drawTitleScreen() {
   drawAtmosphereBg();
   ctx.save();
   ctx.translate(W / 2, 265);
-  ctx.rotate(state.tick * 0.004);
-  ctx.strokeStyle = 'rgba(56, 189, 248, 0.35)'; ctx.lineWidth = 2;
-  ctx.strokeRect(-105, -105, 210, 210);
+  ctx.rotate(state.tick * 0.005);
+  ctx.strokeStyle = 'rgba(56, 189, 248, 0.45)'; ctx.lineWidth = 2.5;
+  ctx.strokeRect(-115, -115, 230, 230);
   ctx.rotate(Math.PI / 4);
-  ctx.strokeStyle = 'rgba(251, 191, 36, 0.35)';
-  ctx.strokeRect(-105, -105, 210, 210);
+  ctx.strokeStyle = 'rgba(251, 191, 36, 0.45)';
+  ctx.strokeRect(-115, -115, 230, 230);
   ctx.restore();
 
-  drawUnitSprite('argeon', W / 2 - 235, 275, 148, false, false);
-  drawUnitSprite('kaleos', W / 2 + 235, 275, 148, true, false);
+  drawUnitSprite('argeon', W / 2 - 245, 275, 160, false, 'normal');
+  drawUnitSprite('kaleos', W / 2 + 245, 275, 160, true, 'normal');
 
   ctx.textAlign = 'center';
-  ctx.font = '900 58px "Cinzel", serif'; ctx.fillStyle = '#f8fafc';
+  ctx.font = '900 60px "Cinzel", serif'; ctx.fillStyle = '#f8fafc';
   ctx.fillText('DUELYST II', W / 2, 255);
 
   ctx.font = '700 16px "Press Start 2P", monospace'; ctx.fillStyle = '#38bdf8';
   ctx.fillText('CHRONICLES OF MYTHRON', W / 2, 298);
 
   ctx.font = '15px "Noto Sans KR"'; ctx.fillStyle = '#94a3b8';
-  ctx.fillText('정통 포지셔닝 & 배치 · 100% 수동 타겟팅 · 고타격감 전투 이펙트', W / 2, 470);
+  ctx.fillText('고밀도 4프레임 픽셀 아트 · 전술 경로 예측 · 시네마틱 전투 VFX', W / 2, 470);
 
   const pulse = 0.6 + Math.sin(state.tick * 0.08) * 0.4;
   roundRect(W / 2 - 175, 535, 350, 70, 8, '#0284c7', `rgba(56, 189, 248, ${pulse})`, 3);
@@ -2105,7 +2367,7 @@ function drawSelectScreen() {
     const cx = 55 + idx * 196;
     const isSel = state.selectedFaction === fid;
     roundRect(cx, 92, 184, 130, 8, isSel ? '#111d38' : '#090e1c', isSel ? f.color : '#1e293b', isSel ? 3 : 1.5);
-    drawUnitSprite(f.sprite, cx + 92, 144, 72, false, false);
+    drawUnitSprite(f.sprite, cx + 92, 144, 76, false, 'normal');
     ctx.textAlign = 'center';
     ctx.font = '900 13px "Noto Sans KR"'; ctx.fillStyle = isSel ? f.color : '#cbd5e1';
     ctx.fillText(f.name, cx + 92, 196);
@@ -2118,7 +2380,7 @@ function drawSelectScreen() {
 
   ctx.fillStyle = 'rgba(0,0,0,0.55)';
   ctx.beginPath(); ctx.ellipse(165, 405, 52, 14, 0, 0, Math.PI * 2); ctx.fill();
-  drawUnitSprite(sel.sprite, 165, 340, 132, false, false);
+  drawUnitSprite(sel.sprite, 165, 340, 140, false, 'normal');
 
   ctx.textAlign = 'center';
   ctx.font = 'bold 11.5px "Noto Sans KR"'; ctx.fillStyle = sel.color;
@@ -2135,10 +2397,10 @@ function drawSelectScreen() {
     ctx.fillText(sel.mechanicDesc.slice(i * 16, (i + 1) * 16), 80, 524 + i * 17);
   }
   ctx.fillStyle = '#38bdf8';
-  ctx.fillText(`• 아군 통과 & 공수/비행 배치`, 80, 608);
-  ctx.fillText(`• 자동 공격 제거 (수동 지정)`, 80, 626);
+  ctx.fillText(`• 전술 경로 예측 & 킬각 표시`, 80, 608);
+  ctx.fillText(`• 지면 데칼 & 4프레임 애니메이션`, 80, 626);
   ctx.fillStyle = '#fbbf24';
-  ctx.fillText(`• 동시 반격 & 오프닝 멀리건`, 80, 646);
+  ctx.fillText(`• 100% 수동 타겟팅 & 멀리건`, 80, 646);
 
   ctx.font = '900 14px "Noto Sans KR"'; ctx.fillStyle = '#fbbf24';
   ctx.fillText(`🃏 [${sel.title}] 전용 덱 핵심 카드 9종`, 280, 268);
@@ -2162,7 +2424,7 @@ function drawSelectScreen() {
     ctx.fillText(c.name, kx + 32, ky + 20);
 
     if (c.type === 'minion') {
-      drawUnitSprite(c.sprite, kx + 34, ky + 62, 48, false, false);
+      drawUnitSprite(c.sprite, kx + 34, ky + 62, 50, false, 'normal');
       ctx.font = 'bold 12px "Noto Sans KR"'; ctx.fillStyle = '#fbbf24';
       ctx.fillText(`⚔️ ${c.atk}   ❤️ ${c.hp}`, kx + 66, ky + 58);
       ctx.font = '10px "Noto Sans KR"'; ctx.fillStyle = '#38bdf8';
@@ -2222,7 +2484,7 @@ function drawMulliganScreen() {
     const cy = 260 - (isSel ? 18 : 0);
 
     roundRect(cx, cy, 172, 265, 8, isSel ? '#3b0764' : '#0b1224', isSel ? '#fbbf24' : '#38bdf8', isSel ? 3 : 2);
-    drawCardArt(c, cx + 10, cy + 36, 152, 95);
+    drawCardArt(c, cx + 10, cy + 36, 152, 95, isSel);
 
     ctx.fillStyle = '#0284c7';
     ctx.beginPath(); ctx.arc(cx + 22, cy + 20, 12, 0, Math.PI * 2); ctx.fill();
@@ -2250,6 +2512,34 @@ function drawMulliganScreen() {
   ctx.fillText('⚔️ 결투 시작 (CONFIRM)', W / 2, 619);
 }
 
+function drawTacticalArrow(r1, c1, r2, c2, color) {
+  const p1 = tileCenter(r1, c1);
+  const p2 = tileCenter(r2, c2);
+  const ang = Math.atan2(p2.y - p1.y, p2.x - p1.x);
+
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 4;
+  ctx.setLineDash([8, 6]);
+  ctx.lineDashOffset = -state.tick * 0.8;
+  ctx.beginPath();
+  ctx.moveTo(p1.x, p1.y);
+  ctx.lineTo(p2.x, p2.y);
+  ctx.stroke();
+
+  ctx.setLineDash([]);
+  ctx.fillStyle = color;
+  ctx.translate(p2.x, p2.y);
+  ctx.rotate(ang);
+  ctx.beginPath();
+  ctx.moveTo(4, 0);
+  ctx.lineTo(-14, -9);
+  ctx.lineTo(-14, 9);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
 function drawBattleScreen() {
   ctx.save();
   if (state.shake > 0) {
@@ -2270,7 +2560,7 @@ function drawBattleScreen() {
 
   // 좌측 플레이어 HUD
   roundRect(55, 16, 158, 96, 8, '#0b1224', pf.color, 2);
-  drawUnitSprite(pf.sprite, 102, 60, 74, false, false);
+  drawUnitSprite(pf.sprite, 102, 60, 78, false, 'normal');
   ctx.textAlign = 'center';
   ctx.font = '900 12px "Noto Sans KR"'; ctx.fillStyle = pf.color;
   ctx.fillText(pf.name.split(' ')[0], 102, 104);
@@ -2320,7 +2610,7 @@ function drawBattleScreen() {
     ctx.fillText(`내구도: ${'◆'.repeat(a.dur)}`, 316 + idx * 118, 87);
   });
 
-  // 중앙 턴 & 타겟 모드 안내 배너
+  // 중앙 턴 & 타겟 모드 배너
   ctx.textAlign = 'center';
   ctx.font = '900 16px "Cinzel", serif'; ctx.fillStyle = '#f8fafc';
   ctx.fillText(`TURN ${state.turn}`, W / 2 + 45, 36);
@@ -2338,7 +2628,7 @@ function drawBattleScreen() {
 
   // 우측 적 HUD
   roundRect(1067, 16, 158, 96, 8, '#0b1224', ef.color, 2);
-  drawUnitSprite(ef.sprite, 1178, 60, 74, true, false);
+  drawUnitSprite(ef.sprite, 1178, 60, 78, true, 'normal');
   ctx.textAlign = 'center';
   ctx.font = '900 12px "Noto Sans KR"'; ctx.fillStyle = ef.color;
   ctx.fillText(ef.name.split(' ')[0], 1178, 104);
@@ -2357,7 +2647,7 @@ function drawBattleScreen() {
   ctx.fillStyle = ef.color;
   ctx.fillText(ef.mechanicTag.split('·')[0], 1052, 64);
 
-  // 중앙 5x9 전술 보드
+  // 중앙 2.5D 전술 보드
   let moves = [], attacks = [], summons = [], spells = [];
   if (state.selectedPos) {
     moves = getValidMoves(state.selectedPos.r, state.selectedPos.c);
@@ -2369,6 +2659,7 @@ function drawBattleScreen() {
     else if (activeHandCard.type === 'spell') spells = getValidSpellTargets(activeHandCard, 'player');
   }
 
+  // Pass 1: 타일 바닥 + 지면 데칼 + 그림자 역병 + 입체 마나 크리스탈 + 배치 미리보기
   for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
     const tx = BOARD_X + c * (TILE_W + GAP);
     const ty = BOARD_Y + r * (TILE_H + GAP);
@@ -2380,54 +2671,110 @@ function drawBattleScreen() {
     const isHov = state.hoverTile && state.hoverTile.r === r && state.hoverTile.c === c;
     const creep = state.creepTiles.find(ct => ct.r === r && ct.c === c);
 
-    // 2.5D 베벨 타일
-    ctx.fillStyle = '#02040a';
-    ctx.fillRect(tx, ty + 5, TILE_W, TILE_H);
+    // 2.5D 타일 측면 석재 두께
+    ctx.fillStyle = '#03060e';
+    ctx.beginPath(); ctx.roundRect(tx, ty + 6, TILE_W, TILE_H, 5); ctx.fill();
 
-    // 구역별 색조 구분 (A~D 아군 진영 / E 중앙 / F~I 적 진영)
-    let fill = (r + c) % 2 === 0 ? 'rgba(15, 23, 42, 0.92)' : 'rgba(22, 33, 60, 0.92)';
-    if (c >= 5) fill = (r + c) % 2 === 0 ? 'rgba(24, 22, 46, 0.92)' : 'rgba(32, 28, 56, 0.92)';
-    let stroke = c === 4 ? '#38bdf8' : '#1e293b';
+    let fill = (r + c) % 2 === 0 ? 'rgba(15, 24, 44, 0.94)' : 'rgba(22, 35, 62, 0.94)';
+    if (c >= 5) fill = (r + c) % 2 === 0 ? 'rgba(26, 22, 48, 0.94)' : 'rgba(34, 28, 58, 0.94)';
+    let stroke = c === 4 ? '#38bdf8' : '#24344d';
     let lw = c === 4 ? 1.8 : 1.3;
 
-    if (creep) { fill = 'rgba(88, 28, 135, 0.72)'; stroke = '#c084fc'; }
-    if (isMove) { fill = 'rgba(14, 116, 144, 0.58)'; stroke = '#38bdf8'; lw = 2.5; }
+    if (creep) { fill = 'rgba(76, 29, 149, 0.78)'; stroke = '#c084fc'; }
+    if (isMove) { fill = 'rgba(14, 116, 144, 0.62)'; stroke = '#38bdf8'; lw = 2.5; }
     if (isSum) {
       const isAirdrop = activeHandCard && activeHandCard.keywords.includes('airdrop');
-      fill = isAirdrop ? 'rgba(8, 145, 178, 0.45)' : 'rgba(6, 95, 70, 0.62)';
+      fill = isAirdrop ? 'rgba(8, 145, 178, 0.48)' : 'rgba(6, 95, 70, 0.64)';
       stroke = isAirdrop ? '#22d3ee' : '#10b981';
       lw = 2.5;
     }
-    if (isAtk || isSpl) { fill = 'rgba(159, 18, 57, 0.68)'; stroke = '#f43f5e'; lw = 2.5; }
-    if (isSel) { fill = 'rgba(30, 58, 138, 0.78)'; stroke = '#fbbf24'; lw = 3; }
+    if (isAtk || isSpl) { fill = 'rgba(159, 18, 57, 0.70)'; stroke = '#f43f5e'; lw = 2.5; }
+    if (isSel) { fill = 'rgba(30, 58, 138, 0.82)'; stroke = '#fbbf24'; lw = 3; }
     if (isHov) { stroke = '#f8fafc'; lw = 2.5; }
 
     roundRect(tx, ty, TILE_W, TILE_H, 5, fill, stroke, lw);
 
-    // 좌측 상단 체스식 좌표 표기 (A1~I5)
+    // 타일 상단 베벨 하이라이트 & 코너 리벳 디테일
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(tx + 5, ty + 2); ctx.lineTo(tx + TILE_W - 5, ty + 2); ctx.stroke();
+    ctx.fillStyle = 'rgba(148, 163, 184, 0.25)';
+    ctx.fillRect(tx + 3, ty + 3, 2, 2);
+    ctx.fillRect(tx + TILE_W - 5, ty + 3, 2, 2);
+
     ctx.textAlign = 'left';
     ctx.font = '9px monospace';
-    ctx.fillStyle = c >= 5 ? 'rgba(244, 63, 94, 0.42)' : 'rgba(148, 163, 184, 0.35)';
-    ctx.fillText(`${COL_LABELS[c]}${r + 1}`, tx + 5, ty + 11);
+    ctx.fillStyle = c >= 5 ? 'rgba(244, 63, 94, 0.45)' : 'rgba(148, 163, 184, 0.36)';
+    ctx.fillText(`${COL_LABELS[c]}${r + 1}`, tx + 7, ty + 12);
 
+    // 지면 데칼 렌더링 (균열, 화염 그을음, 서리 결정)
+    for (let di = state.decals.length - 1; di >= 0; di--) {
+      const dec = state.decals[di];
+      if (dec.r !== r || dec.c !== c) continue;
+      dec.t++;
+      if (dec.t >= dec.maxT) { state.decals.splice(di, 1); continue; }
+      const dAlpha = (1 - dec.t / dec.maxT) * 0.65;
+      const dcx = tx + TILE_W / 2, dcy = ty + TILE_H / 2 + 6;
+      ctx.save();
+      ctx.globalAlpha = dAlpha;
+      if (dec.kind === 'scorch') {
+        const sg = ctx.createRadialGradient(dcx, dcy, 2, dcx, dcy, 26);
+        sg.addColorStop(0, '#090d16'); sg.addColorStop(0.6, '#7c2d12'); sg.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = sg; ctx.beginPath(); ctx.arc(dcx, dcy, 26, 0, Math.PI * 2); ctx.fill();
+      } else if (dec.kind === 'frost') {
+        ctx.strokeStyle = '#bae6fd'; ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(dcx - 16, dcy); ctx.lineTo(dcx + 16, dcy);
+        ctx.moveTo(dcx, dcy - 14); ctx.lineTo(dcx, dcy + 14);
+        ctx.moveTo(dcx - 11, dcy - 11); ctx.lineTo(dcx + 11, dcy + 11);
+        ctx.stroke();
+      } else {
+        ctx.strokeStyle = '#020408'; ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(dcx - 14, dcy - 6); ctx.lineTo(dcx - 2, dcy + 2); ctx.lineTo(dcx + 15, dcy - 4);
+        ctx.moveTo(dcx - 2, dcy + 2); ctx.lineTo(dcx + 5, dcy + 12);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    // 그림자 역병(Shadow Creep) 부글거리는 심연 문양
     if (creep) {
-      ctx.strokeStyle = 'rgba(232, 121, 249, 0.45)';
-      ctx.beginPath(); ctx.arc(tx + TILE_W / 2, ty + TILE_H / 2, 18, 0, Math.PI * 2); ctx.stroke();
+      const pulse = Math.sin(state.tick * 0.08 + r + c) * 3;
+      ctx.strokeStyle = 'rgba(232, 121, 249, 0.65)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(tx + TILE_W / 2, ty + TILE_H / 2, 16 + pulse, 0, Math.PI * 2); ctx.stroke();
+      ctx.fillStyle = 'rgba(192, 132, 252, 0.5)';
+      ctx.fillRect(tx + TILE_W / 2 - 8 + pulse, ty + TILE_H / 2 - 6, 3, 3);
+      ctx.fillRect(tx + TILE_W / 2 + 6, ty + TILE_H / 2 + 4 - pulse, 3, 3);
     }
 
+    // 입체 마나 샘 크리스탈 + 룬 마법진
     if (state.manaOrbs.some(o => o.r === r && o.c === c)) {
+      const ocx = tx + TILE_W / 2;
+      const ocy = ty + TILE_H / 2 - 2 + Math.sin(state.tick * 0.08) * 4;
       const pulse = Math.sin(state.tick * 0.1) * 3;
-      const mg = ctx.createRadialGradient(tx + TILE_W / 2, ty + TILE_H / 2, 2, tx + TILE_W / 2, ty + TILE_H / 2, 22 + pulse);
-      mg.addColorStop(0, '#ffffff'); mg.addColorStop(0.45, '#38bdf8'); mg.addColorStop(1, 'rgba(56,189,248,0)');
+
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.45)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.ellipse(ocx, ty + TILE_H / 2 + 12, 20, 7, 0, 0, Math.PI * 2); ctx.stroke();
+
+      const mg = ctx.createRadialGradient(ocx, ocy, 2, ocx, ocy, 26 + pulse);
+      mg.addColorStop(0, '#ffffff'); mg.addColorStop(0.4, '#38bdf8'); mg.addColorStop(1, 'rgba(56,189,248,0)');
       ctx.fillStyle = mg;
-      ctx.beginPath(); ctx.arc(tx + TILE_W / 2, ty + TILE_H / 2, 22 + pulse, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(ocx, ocy, 26 + pulse, 0, Math.PI * 2); ctx.fill();
+
+      ctx.fillStyle = '#bae6fd';
+      ctx.beginPath(); ctx.moveTo(ocx, ocy - 14); ctx.lineTo(ocx + 10, ocy); ctx.lineTo(ocx, ocy + 14); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#0284c7';
+      ctx.beginPath(); ctx.moveTo(ocx, ocy - 14); ctx.lineTo(ocx - 10, ocy); ctx.lineTo(ocx, ocy + 14); ctx.closePath(); ctx.fill();
     }
 
-    // 배치 미리보기(Ghost Preview): 소환 카드 선택 후 빈 타일 호버 시
+    // 소환 미리보기 (Ghost Preview)
     if (isSum && isHov && activeHandCard && !state.board[r][c]) {
       const gx = tx + TILE_W / 2;
       const gy = ty + TILE_H / 2 - 8;
-      drawUnitSprite(activeHandCard.sprite, gx, gy, 58, false, false, 0.55);
+      drawUnitSprite(activeHandCard.sprite, gx, gy, 62, false, 'normal', 0.6);
 
       ctx.textAlign = 'center';
       ctx.font = 'bold 10px "Noto Sans KR"';
@@ -2441,7 +2788,6 @@ function drawBattleScreen() {
         ctx.fillStyle = '#34d399'; ctx.fillText('✨소환 위치', gx, ty + 13);
       }
 
-      // 춤추는 칼날 전방(→) 3 피해 미리보기 표시
       if (activeHandCard.keywords.includes('gambit_front3') && c + 1 < COLS) {
         const fx = BOARD_X + (c + 1) * (TILE_W + GAP);
         roundRect(fx, ty, TILE_W, TILE_H, 5, 'rgba(244, 63, 94, 0.25)', '#f43f5e', 2);
@@ -2450,62 +2796,107 @@ function drawBattleScreen() {
       }
     }
 
-    // 중력의 빙벽 3칸 세로 배치 미리보기
     if (isSpl && isHov && activeHandCard && activeHandCard.spell === 'gravity_well') {
       for (const dr of [-1, 0, 1]) {
         const nr = r + dr;
         if (nr >= 0 && nr < ROWS && !state.board[nr][c]) {
           const wy = BOARD_Y + nr * (TILE_H + GAP);
-          drawUnitSprite('wall', tx + TILE_W / 2, wy + TILE_H / 2 - 8, 54, false, false, 0.55);
+          drawUnitSprite('wall', tx + TILE_W / 2, wy + TILE_H / 2 - 8, 56, false, 'normal', 0.58);
         }
       }
     }
+  }
 
+  // 전술 경로 예측 화살표 (선택 유닛 -> 마우스 호버 타일)
+  if (state.selectedPos && state.hoverTile) {
+    const sp = state.selectedPos;
+    const ht = state.hoverTile;
+    if (moves.some(m => m.r === ht.r && m.c === ht.c)) {
+      drawTacticalArrow(sp.r, sp.c, ht.r, ht.c, '#38bdf8');
+    } else if (attacks.some(a => a.r === ht.r && a.c === ht.c)) {
+      drawTacticalArrow(sp.r, sp.c, ht.r, ht.c, '#f43f5e');
+    }
+  }
+
+  // Pass 2: 유닛 + 잔상 트레일 + 바닥 오라 + 교전 킬각 배지
+  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
     const u = state.board[r][c];
-    if (u) {
-      u.animX *= 0.76;
-      u.animY *= 0.76;
-      if (u.flashT > 0) u.flashT--;
+    if (!u) continue;
 
-      const cx = tx + TILE_W / 2 + u.animX;
-      const cy = ty + TILE_H / 2 - 8 + u.animY;
-      const effAtk = getEffectiveAtk(u, r, c);
-      const buffed = effAtk > u.atk;
+    const tx = BOARD_X + c * (TILE_W + GAP);
+    const ty = BOARD_Y + r * (TILE_H + GAP);
+    const isAtk = attacks.some(a => a.r === r && a.c === c);
+    const isHov = state.hoverTile && state.hoverTile.r === r && state.hoverTile.c === c;
 
-      // 바닥 링 + 전방 방향 화살표(▸ / ◂)
-      ctx.fillStyle = 'rgba(0,0,0,0.6)';
-      ctx.beginPath(); ctx.ellipse(cx, ty + TILE_H - 14, 24, 7, 0, 0, Math.PI * 2); ctx.fill();
-      ctx.strokeStyle = u.owner === 'player' ? '#38bdf8' : '#f43f5e';
-      ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.ellipse(cx, ty + TILE_H - 14, 24, 7, 0, 0, Math.PI * 2); ctx.stroke();
+    u.animX *= 0.76;
+    u.animY *= 0.76;
+    if (u.flashT > 0) u.flashT--;
 
-      ctx.fillStyle = u.owner === 'player' ? '#38bdf8' : '#f43f5e';
-      ctx.font = 'bold 11px sans-serif';
+    const cx = tx + TILE_W / 2 + u.animX;
+    const cy = ty + TILE_H / 2 - 8 + u.animY;
+
+    if (Math.abs(u.animX) > 4 || Math.abs(u.animY) > 4) {
+      u.trail.push({ x: cx, y: cy, alpha: 0.55 });
+      if (u.trail.length > 5) u.trail.shift();
+    } else if (u.trail.length > 0) {
+      u.trail.shift();
+    }
+    for (const tr of u.trail) {
+      drawUnitSprite(u.sprite, tr.x, tr.y, u.isGeneral ? 74 : 64, u.owner === 'enemy', 'ghost', tr.alpha * 0.52);
+      tr.alpha *= 0.85;
+    }
+
+    const effAtk = getEffectiveAtk(u, r, c);
+    const buffed = effAtk > u.atk;
+
+    ctx.fillStyle = 'rgba(0,0,0,0.65)';
+    ctx.beginPath(); ctx.ellipse(cx, ty + TILE_H - 14, 25, 7, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = u.owner === 'player' ? '#38bdf8' : '#f43f5e';
+    ctx.lineWidth = 2.2;
+    ctx.beginPath(); ctx.ellipse(cx, ty + TILE_H - 14, 25, 7, 0, 0, Math.PI * 2); ctx.stroke();
+
+    ctx.fillStyle = u.owner === 'player' ? '#38bdf8' : '#f43f5e';
+    ctx.font = 'bold 11px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(u.owner === 'player' ? '▸' : '◂', u.owner === 'player' ? cx + 28 : cx - 28, ty + TILE_H - 10);
+
+    // 상단 상태/키워드 배지
+    ctx.font = 'bold 9.5px "Noto Sans KR"';
+    const isBsTarget = isAtk && state.selectedPos && isBackstabPosition(state.board[state.selectedPos.r][state.selectedPos.c], state.selectedPos.r, state.selectedPos.c, r, c);
+    if (isBsTarget) { ctx.fillStyle = '#f43f5e'; ctx.fillText('🗡️기습(+2)', cx, ty + 13); }
+    else if (u.stunned) { ctx.fillStyle = '#38bdf8'; ctx.fillText('❄️기절', cx, ty + 13); }
+    else if (isKeywordActive(u, r, c, 'zeal_atk2')) { ctx.fillStyle = '#fef08a'; ctx.fillText('☀️열성 활성', cx, ty + 13); }
+    else if (isKeywordActive(u, r, c, 'infiltrate_atk2')) { ctx.fillStyle = '#38bdf8'; ctx.fillText('❄️침투 활성', cx, ty + 13); }
+    else if (u.keywords.includes('provoke')) { ctx.fillStyle = '#fbbf24'; ctx.fillText('🛡️도발', cx, ty + 13); }
+    else if (u.keywords.includes('blast')) { ctx.fillStyle = '#14b8a6'; ctx.fillText('⚡폭발', cx, ty + 13); }
+    else if (u.keywords.includes('ranged')) { ctx.fillStyle = '#38bdf8'; ctx.fillText('🏹원거리', cx, ty + 13); }
+    else if (u.keywords.includes('flying')) { ctx.fillStyle = '#a5f3fc'; ctx.fillText('🕊️비행', cx, ty + 13); }
+    else if (u.keywords.includes('celerity')) { ctx.fillStyle = '#fde047'; ctx.fillText('⚡질풍', cx, ty + 13); }
+    else if (u.keywords.includes('rebirth')) { ctx.fillStyle = '#6ee7b7'; ctx.fillText('🥚환생', cx, ty + 13); }
+
+    drawUnitSprite(u.sprite, cx, cy, u.isGeneral ? 74 : 64, u.owner === 'enemy', u.flashT > 0 ? 'flash' : 'normal');
+
+    roundRect(tx + 6, ty + TILE_H - 22, 25, 18, 4, buffed ? '#15803d' : '#ca8a04', '#fef08a', 1);
+    ctx.font = '900 12px "Noto Sans KR"'; ctx.fillStyle = '#ffffff';
+    ctx.fillText(effAtk, tx + 18, ty + TILE_H - 9);
+
+    roundRect(tx + TILE_W - 31, ty + TILE_H - 22, 25, 18, 4, '#be123c', '#fda4af', 1);
+    ctx.fillText(u.hp, tx + TILE_W - 18, ty + TILE_H - 9);
+
+    // 적 타겟 호버 시 실시간 킬각/반격 플로팅 예측 배지
+    if (isAtk && isHov && state.selectedPos) {
+      const myU = state.board[state.selectedPos.r][state.selectedPos.c];
+      const bs = isBackstabPosition(myU, state.selectedPos.r, state.selectedPos.c, r, c);
+      const noCounter = myU.keywords.includes('ranged') || myU.keywords.includes('blast') || bs || u.keywords.includes('structure');
+      const myDmg = getEffectiveAtk(myU, state.selectedPos.r, state.selectedPos.c) + (bs ? 2 : 0);
+      const cDmg = noCounter ? 0 : effAtk;
+      const isKill = myDmg >= u.hp;
+
+      roundRect(cx - 48, ty - 24, 96, 22, 4, isKill ? '#9f1239' : '#0f172a', isKill ? '#fef08a' : '#f43f5e', 1.5);
       ctx.textAlign = 'center';
-      ctx.fillText(u.owner === 'player' ? '▸' : '◂', u.owner === 'player' ? cx + 27 : cx - 27, ty + TILE_H - 10);
-
-      // 상단 상태/진영 키워드 표기
-      ctx.font = 'bold 9.5px "Noto Sans KR"';
-      const isBsTarget = isAtk && state.selectedPos && isBackstabPosition(state.board[state.selectedPos.r][state.selectedPos.c], state.selectedPos.r, state.selectedPos.c, r, c);
-      if (isBsTarget) { ctx.fillStyle = '#f43f5e'; ctx.fillText('🗡️기습(+2)', cx, ty + 13); }
-      else if (u.stunned) { ctx.fillStyle = '#38bdf8'; ctx.fillText('❄️기절', cx, ty + 13); }
-      else if (isKeywordActive(u, r, c, 'zeal_atk2')) { ctx.fillStyle = '#fef08a'; ctx.fillText('☀️열성 활성', cx, ty + 13); }
-      else if (isKeywordActive(u, r, c, 'infiltrate_atk2')) { ctx.fillStyle = '#38bdf8'; ctx.fillText('❄️침투 활성', cx, ty + 13); }
-      else if (u.keywords.includes('provoke')) { ctx.fillStyle = '#fbbf24'; ctx.fillText('🛡️도발', cx, ty + 13); }
-      else if (u.keywords.includes('blast')) { ctx.fillStyle = '#14b8a6'; ctx.fillText('⚡폭발', cx, ty + 13); }
-      else if (u.keywords.includes('ranged')) { ctx.fillStyle = '#38bdf8'; ctx.fillText('🏹원거리', cx, ty + 13); }
-      else if (u.keywords.includes('flying')) { ctx.fillStyle = '#a5f3fc'; ctx.fillText('🕊️비행', cx, ty + 13); }
-      else if (u.keywords.includes('celerity')) { ctx.fillStyle = '#fde047'; ctx.fillText('⚡질풍', cx, ty + 13); }
-      else if (u.keywords.includes('rebirth')) { ctx.fillStyle = '#6ee7b7'; ctx.fillText('🥚환생', cx, ty + 13); }
-
-      drawUnitSprite(u.sprite, cx, cy, u.isGeneral ? 70 : 60, u.owner === 'enemy', u.flashT > 0);
-
-      roundRect(tx + 6, ty + TILE_H - 22, 25, 18, 4, buffed ? '#15803d' : '#ca8a04', '#fef08a', 1);
-      ctx.font = '900 12px "Noto Sans KR"'; ctx.fillStyle = '#ffffff';
-      ctx.fillText(effAtk, tx + 18, ty + TILE_H - 9);
-
-      roundRect(tx + TILE_W - 31, ty + TILE_H - 22, 25, 18, 4, '#be123c', '#fda4af', 1);
-      ctx.fillText(u.hp, tx + TILE_W - 18, ty + TILE_H - 9);
+      ctx.font = '900 10.5px "Noto Sans KR"';
+      ctx.fillStyle = isKill ? '#fef08a' : '#ffffff';
+      ctx.fillText(isKill ? `💀 처치! (-${myDmg})` : `⚔️-${myDmg} / 🛡️-${cDmg}`, cx, ty - 9);
     }
   }
 
@@ -2525,7 +2916,7 @@ function drawBattleScreen() {
     if (hu) {
       const hAtk = getEffectiveAtk(hu, state.hoverTile.r, state.hoverTile.c);
       roundRect(952, 382, 261, 140, 6, '#050811', hu.owner === 'player' ? '#38bdf8' : '#f43f5e', 1.5);
-      drawUnitSprite(hu.sprite, 992, 434, 64, hu.owner === 'enemy', false);
+      drawUnitSprite(hu.sprite, 992, 434, 66, hu.owner === 'enemy', 'normal');
       ctx.font = '900 14px "Noto Sans KR"'; ctx.fillStyle = '#f8fafc';
       ctx.fillText(`${hu.name} (${COL_LABELS[state.hoverTile.c]}${state.hoverTile.r + 1})`, 1030, 408);
       ctx.font = 'bold 12px "Noto Sans KR"'; ctx.fillStyle = '#fbbf24';
@@ -2549,7 +2940,7 @@ function drawBattleScreen() {
     }
   }
 
-  // 하단 REPLACE + 손패 + END TURN (타겟 모드 시 SKIP 버튼으로 전환)
+  // 하단 REPLACE + 손패 + END TURN / SKIP
   const canRep = !state.replacedThisTurn && state.pDeck.length > 0 && !state.targetMode;
   roundRect(55, 585, 118, 185, 10, state.replaceMode ? '#78350f' : '#0b1224', state.replaceMode ? '#fbbf24' : (canRep ? '#38bdf8' : '#1e293b'), 2);
   ctx.textAlign = 'center';
@@ -2568,7 +2959,7 @@ function drawBattleScreen() {
     const borderCol = isSel ? '#fbbf24' : (ok ? (c.type === 'spell' ? '#c084fc' : (c.type === 'artifact' ? '#f59e0b' : '#38bdf8')) : '#334155');
 
     roundRect(cx, cy, 146, 230, 8, isSel ? '#172554' : '#0b1224', borderCol, isSel ? 3 : 2);
-    drawCardArt(c, cx + 8, cy + 32, 130, 82);
+    drawCardArt(c, cx + 8, cy + 32, 130, 82, isHov || isSel);
 
     ctx.fillStyle = '#0284c7';
     ctx.beginPath(); ctx.arc(cx + 18, cy + 16, 11, 0, Math.PI * 2); ctx.fill();
@@ -2600,6 +2991,26 @@ function drawBattleScreen() {
     }
   }
 
+  // 호버 중인 카드 상세 키워드 & 전문 툴팁
+  if (state.hoverCardIdx !== null && state.pHand[state.hoverCardIdx]) {
+    const hc = state.pHand[state.hoverCardIdx];
+    const tx = Math.min(820, Math.max(195, 195 + state.hoverCardIdx * 155 - 80));
+    const kws = (hc.keywords || []).filter(k => KEYWORD_GLOSSARY[k]);
+    const boxH = 66 + kws.length * 20;
+    const ty = 528 - boxH;
+    roundRect(tx, ty, 320, boxH, 8, 'rgba(6, 10, 22, 0.96)', '#fbbf24', 2);
+    ctx.textAlign = 'left';
+    ctx.font = '900 13px "Noto Sans KR"'; ctx.fillStyle = '#fbbf24';
+    ctx.fillText(`[${hc.cost} 마나] ${hc.name}`, tx + 12, ty + 20);
+    ctx.font = '11px "Noto Sans KR"'; ctx.fillStyle = '#f8fafc';
+    ctx.fillText(hc.desc.slice(0, 34), tx + 12, ty + 38);
+    if (hc.desc.length > 34) ctx.fillText(hc.desc.slice(34, 68), tx + 12, ty + 54);
+    kws.forEach((kw, idx) => {
+      ctx.font = 'bold 10.5px "Noto Sans KR"'; ctx.fillStyle = '#38bdf8';
+      ctx.fillText(KEYWORD_GLOSSARY[kw], tx + 12, ty + 74 + idx * 18);
+    });
+  }
+
   if (state.targetMode) {
     roundRect(1135, 585, 115, 115, 10, '#78350f', '#fbbf24', 2.5);
     ctx.textAlign = 'center';
@@ -2619,14 +3030,15 @@ function drawBattleScreen() {
   ctx.font = 'bold 12px "Noto Sans KR"'; ctx.fillStyle = '#cbd5e1';
   ctx.fillText('🔙 진영/난이도', 1192, 744);
 
-  // 투사체(원거리 화살/구체) 레이어
+  // 투사체 & 마나 흡수 테더 레이어
   for (let i = state.projectiles.length - 1; i >= 0; i--) {
     const p = state.projectiles[i];
     p.t++;
+    if (p.t < 0) continue;
     if (p.t >= p.maxT) { state.projectiles.splice(i, 1); continue; }
     const prog = p.t / p.maxT;
     const cx = p.x1 + (p.x2 - p.x1) * prog;
-    const cy = p.y1 + (p.y2 - p.y1) * prog - Math.sin(prog * Math.PI) * 18;
+    const cy = p.y1 + (p.y2 - p.y1) * prog - Math.sin(prog * Math.PI) * (p.arcOffset || 18);
     ctx.save();
     ctx.strokeStyle = p.color; ctx.lineWidth = 5;
     ctx.beginPath();
@@ -2634,11 +3046,11 @@ function drawBattleScreen() {
     ctx.lineTo(cx, cy);
     ctx.stroke();
     ctx.fillStyle = '#ffffff';
-    ctx.beginPath(); ctx.arc(cx, cy, 5, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx, cy, 4.5, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
   }
 
-  // 고타격감 전투 이펙트 레이어
+  // 시네마틱 전투 & 마법 이펙트 레이어
   for (let i = state.effects.length - 1; i >= 0; i--) {
     const efObj = state.effects[i];
     efObj.t++;
@@ -2649,53 +3061,113 @@ function drawBattleScreen() {
     ctx.globalAlpha = alpha;
 
     if (efObj.type === 'text') {
-      efObj.y -= 0.75;
+      efObj.y -= 0.78;
       ctx.textAlign = 'center';
       ctx.font = '900 18px "Noto Sans KR"';
       ctx.strokeStyle = '#000000'; ctx.lineWidth = 3.5;
       ctx.strokeText(efObj.text, efObj.x, efObj.y);
       ctx.fillStyle = efObj.color;
       ctx.fillText(efObj.text, efObj.x, efObj.y);
+    } else if (efObj.type === 'pillar') {
+      const w = (1 - prog * 0.5) * 46;
+      const pg = ctx.createLinearGradient(efObj.x - w, efObj.y, efObj.x + w, efObj.y);
+      pg.addColorStop(0, 'rgba(255,255,255,0)');
+      pg.addColorStop(0.5, efObj.color);
+      pg.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = pg;
+      ctx.fillRect(efObj.x - w, efObj.y - 230, w * 2, 230);
+      ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.ellipse(efObj.x, efObj.y, 12 + prog * 36, 6 + prog * 15, 0, 0, Math.PI * 2); ctx.stroke();
+    } else if (efObj.type === 'lightning') {
+      ctx.strokeStyle = efObj.color; ctx.lineWidth = 10 * alpha;
+      ctx.beginPath();
+      efObj.segs.forEach(s => { ctx.moveTo(s.x1, s.y1); ctx.lineTo(s.x2, s.y2); });
+      ctx.stroke();
+      ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 4 * alpha;
+      ctx.beginPath();
+      efObj.segs.forEach(s => { ctx.moveTo(s.x1, s.y1); ctx.lineTo(s.x2, s.y2); });
+      ctx.stroke();
+    } else if (efObj.type === 'iceSpikes') {
+      const scaleH = Math.sin(Math.min(1, prog * 2) * (Math.PI / 2));
+      efObj.spikes.forEach(sp => {
+        ctx.save();
+        ctx.translate(efObj.x + sp.dx, efObj.y);
+        ctx.rotate(sp.tilt);
+        ctx.fillStyle = '#38bdf8';
+        ctx.beginPath(); ctx.moveTo(-6, 0); ctx.lineTo(0, -sp.h * scaleH); ctx.lineTo(6, 0); ctx.closePath(); ctx.fill();
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath(); ctx.moveTo(-2, 0); ctx.lineTo(0, -sp.h * scaleH * 0.9); ctx.lineTo(2, 0); ctx.closePath(); ctx.fill();
+        ctx.restore();
+      });
+    } else if (efObj.type === 'voidVortex') {
+      ctx.translate(efObj.x, efObj.y);
+      ctx.rotate(prog * Math.PI * 3);
+      const vg = ctx.createRadialGradient(0, 0, 2, 0, 0, 44 * (1 - prog * 0.3));
+      vg.addColorStop(0, '#090d16'); vg.addColorStop(0.6, '#9333ea'); vg.addColorStop(1, 'rgba(147,51,234,0)');
+      ctx.fillStyle = vg;
+      ctx.beginPath(); ctx.arc(0, 0, 44, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = '#f0abfc'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(0, 0, 25, 0, Math.PI * 1.3); ctx.stroke();
+    } else if (efObj.type === 'healHelix') {
+      for (let k = 0; k < 2; k++) {
+        const ang = prog * Math.PI * 4 + k * Math.PI;
+        const hx = efObj.x + Math.cos(ang) * 25;
+        const hy = efObj.y - prog * 60;
+        ctx.fillStyle = efObj.color;
+        ctx.beginPath(); ctx.arc(hx, hy, 4.5, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(hx - 1.5, hy - 1.5, 3, 3);
+      }
+    } else if (efObj.type === 'starburst') {
+      const r = 10 + prog * 52;
+      ctx.strokeStyle = efObj.color; ctx.lineWidth = 5.5 * alpha;
+      ctx.beginPath();
+      ctx.moveTo(efObj.x - r, efObj.y); ctx.lineTo(efObj.x + r, efObj.y);
+      ctx.moveTo(efObj.x, efObj.y - r); ctx.lineTo(efObj.x, efObj.y + r);
+      ctx.stroke();
+    } else if (efObj.type === 'shard') {
+      efObj.x += efObj.vx; efObj.y += efObj.vy;
+      efObj.vy += 0.28;
+      ctx.fillStyle = efObj.color;
+      ctx.fillRect(efObj.x - 3, efObj.y - 3, 6, 6);
+    } else if (efObj.type === 'soulOrb') {
+      efObj.y -= 1.35;
+      ctx.fillStyle = efObj.color;
+      ctx.beginPath(); ctx.arc(efObj.x, efObj.y, 8 * alpha, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath(); ctx.arc(efObj.x, efObj.y, 4 * alpha, 0, Math.PI * 2); ctx.fill();
     } else if (efObj.type === 'arcSlash') {
-      // 초승달 검격 궤적
       ctx.translate(efObj.x, efObj.y);
       if (efObj.dirX < 0) ctx.scale(-1, 1);
       const r = 34 * efObj.scale;
       ctx.strokeStyle = efObj.color;
-      ctx.lineWidth = (1 - prog * 0.6) * 9;
-      ctx.beginPath();
-      ctx.arc(-8, 0, r, -Math.PI * 0.42, Math.PI * 0.42);
-      ctx.stroke();
+      ctx.lineWidth = (1 - prog * 0.6) * 9.5;
+      ctx.beginPath(); ctx.arc(-8, 0, r, -Math.PI * 0.42, Math.PI * 0.42); ctx.stroke();
       ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = (1 - prog * 0.6) * 3.5;
-      ctx.beginPath();
-      ctx.arc(-5, 0, r * 0.92, -Math.PI * 0.36, Math.PI * 0.36);
-      ctx.stroke();
+      ctx.lineWidth = (1 - prog * 0.6) * 4;
+      ctx.beginPath(); ctx.arc(-5, 0, r * 0.92, -Math.PI * 0.36, Math.PI * 0.36); ctx.stroke();
     } else if (efObj.type === 'backstabX') {
-      // 기습 치명타 이중 X 참격
       ctx.strokeStyle = '#f43f5e'; ctx.lineWidth = 7 * alpha;
       ctx.beginPath();
-      ctx.moveTo(efObj.x - 32, efObj.y - 32); ctx.lineTo(efObj.x + 32, efObj.y + 32);
-      ctx.moveTo(efObj.x + 32, efObj.y - 32); ctx.lineTo(efObj.x - 32, efObj.y + 32);
+      ctx.moveTo(efObj.x - 36, efObj.y - 36); ctx.lineTo(efObj.x + 36, efObj.y + 36);
+      ctx.moveTo(efObj.x + 36, efObj.y - 36); ctx.lineTo(efObj.x - 36, efObj.y + 36);
       ctx.stroke();
       ctx.strokeStyle = '#fef08a'; ctx.lineWidth = 3 * alpha;
       ctx.beginPath();
-      ctx.moveTo(efObj.x - 26, efObj.y - 26); ctx.lineTo(efObj.x + 26, efObj.y + 26);
-      ctx.moveTo(efObj.x + 26, efObj.y - 26); ctx.lineTo(efObj.x - 26, efObj.y + 26);
+      ctx.moveTo(efObj.x - 30, efObj.y - 30); ctx.lineTo(efObj.x + 30, efObj.y + 30);
+      ctx.moveTo(efObj.x + 30, efObj.y - 30); ctx.lineTo(efObj.x - 30, efObj.y + 30);
       ctx.stroke();
     } else if (efObj.type === 'blastBeam') {
-      // 폭발 가로줄 관통 플라즈마 광선
-      ctx.strokeStyle = '#14b8a6'; ctx.lineWidth = 16 * alpha;
+      ctx.strokeStyle = '#14b8a6'; ctx.lineWidth = 18 * alpha;
       ctx.beginPath(); ctx.moveTo(efObj.x, efObj.y); ctx.lineTo(efObj.x2, efObj.y2); ctx.stroke();
       ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 6 * alpha;
       ctx.beginPath(); ctx.moveTo(efObj.x, efObj.y); ctx.lineTo(efObj.x2, efObj.y2); ctx.stroke();
     } else if (efObj.type === 'whirlwind') {
-      // 광란 360도 회전 칼날 회오리
       ctx.translate(efObj.x, efObj.y);
       ctx.rotate(prog * Math.PI * 3);
       ctx.strokeStyle = '#6ee7b7'; ctx.lineWidth = 6 * alpha;
-      ctx.beginPath(); ctx.arc(0, 0, 74, 0, Math.PI * 1.4); ctx.stroke();
-      ctx.beginPath(); ctx.arc(0, 0, 74, Math.PI, Math.PI * 2.4); ctx.stroke();
+      ctx.beginPath(); ctx.arc(0, 0, 76, 0, Math.PI * 1.4); ctx.stroke();
+      ctx.beginPath(); ctx.arc(0, 0, 76, Math.PI, Math.PI * 2.4); ctx.stroke();
     } else if (efObj.type === 'ring') {
       ctx.strokeStyle = efObj.color; ctx.lineWidth = 3.5 * alpha;
       ctx.beginPath(); ctx.arc(efObj.x, efObj.y, 10 + prog * efObj.maxR, 0, Math.PI * 2); ctx.stroke();
@@ -2706,6 +3178,16 @@ function drawBattleScreen() {
       ctx.fillRect(efObj.x - 2.5, efObj.y - 2.5, 5, 5);
     }
     ctx.restore();
+  }
+
+  // 풀스크린 충격 플래시
+  if (state.screenFlash.alpha > 0.01) {
+    ctx.save();
+    ctx.fillStyle = state.screenFlash.color;
+    ctx.globalAlpha = state.screenFlash.alpha;
+    ctx.fillRect(0, 0, W, H);
+    ctx.restore();
+    state.screenFlash.alpha *= 0.82;
   }
 
   ctx.restore();

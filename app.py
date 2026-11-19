@@ -56,26 +56,49 @@ GAME_HTML = r"""
 </style>
 </head>
 <body>
-<canvas id="game" width="1280" height="820"></canvas>
+<canvas id="game" width="1280" height="820" tabindex="0"></canvas>
 
 <script>
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 const W = canvas.width;
 const H = canvas.height;
+canvas.focus();
 
 // =========================================================================
-// 0. 프로시저럴 Web Audio API 택티컬 신스 사운드 엔진
+// 0. 프로시저럴 Web Audio API 택티컬 신스 사운드 & 앰비언트 BGM 엔진
 // =========================================================================
 const SFX = {
   ctx: null,
   muted: false,
+  bgmOn: false,
+  bgmTimer: null,
+  bgmStep: 0,
   init() {
     if (!this.ctx) {
       const AC = window.AudioContext || window.webkitAudioContext;
       if (AC) this.ctx = new AC();
     }
     if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+  },
+  toggleBgm() {
+    this.init();
+    this.bgmOn = !this.bgmOn;
+    if (this.bgmOn) {
+      if (!this.bgmTimer) {
+        const notes = [220, 261.63, 329.63, 392.0, 440, 392.0, 329.63, 293.66,
+                       196.0, 246.94, 293.66, 392.0, 329.63, 293.66, 261.63, 246.94];
+        this.bgmTimer = setInterval(() => {
+          if (!this.bgmOn || this.muted || !this.ctx) return;
+          const freq = notes[this.bgmStep % notes.length];
+          this.tone(freq, 'sine', 0.48, 0.028, freq * 1.004);
+          if (this.bgmStep % 4 === 0) {
+            this.tone(freq * 0.5, 'triangle', 0.95, 0.032);
+          }
+          this.bgmStep++;
+        }, 420);
+      }
+    }
   },
   tone(freq, type = 'triangle', dur = 0.12, vol = 0.11, slideTo = null, delay = 0) {
     if (this.muted) return;
@@ -121,6 +144,8 @@ const SFX = {
     if (this.muted) return;
     if (kind === 'select') {
       this.tone(540, 'sine', 0.07, 0.08, 760);
+    } else if (kind === 'error') {
+      this.tone(150, 'sawtooth', 0.12, 0.09, 110);
     } else if (kind === 'move') {
       this.tone(240, 'triangle', 0.09, 0.09, 360);
       this.tone(360, 'sine', 0.08, 0.06, 480, 0.04);
@@ -727,7 +752,7 @@ const NEUTRAL_CARDS = [
 // =========================================================================
 const ROWS = 5, COLS = 9;
 const COL_LABELS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I'];
-const BOARD_X = 62, BOARD_Y = 128, TILE_W = 92, TILE_H = 78, GAP = 4;
+const BOARD_X = 64, BOARD_Y = 132, TILE_W = 92, TILE_H = 76, GAP = 4;
 
 let state = {
   screen: 'title',
@@ -743,6 +768,8 @@ let state = {
   decals: [],
   turn: 1,
   turnKills: 0,
+  stats: { dmgDealt: 0, minionsSummoned: 0, spellsCast: 0, kills: 0 },
+  manaWarnT: 0,
   callout: null,
   enemyCardReveal: null,
   mulliganSelected: new Set(),
@@ -972,6 +999,8 @@ function startBattle(pFid, eChoice) {
   state.decals = [];
   state.turn = 1;
   state.turnKills = 0;
+  state.stats = { dmgDealt: 0, minionsSummoned: 0, spellsCast: 0, kills: 0 };
+  state.manaWarnT = 0;
   state.callout = null;
   state.enemyCardReveal = null;
   state.mulliganSelected = new Set();
@@ -1322,6 +1351,7 @@ function dealDamageToUnit(r, c, dmg, color = '#ef4444', dirX = 0) {
     if (arts.some(a => a.art === 'artifact_regalia')) finalDmg = Math.max(0, finalDmg - 2);
     if (finalDmg > 0) damageArtifacts(u.owner);
   }
+  if (u.owner === 'enemy' && finalDmg > 0) state.stats.dmgDealt += finalDmg;
   u.hp -= finalDmg;
   u.flashT = 12;
   u.animX += dirX * 16;
@@ -1339,10 +1369,13 @@ function dealDamageToUnit(r, c, dmg, color = '#ef4444', dirX = 0) {
     state.board[r][c] = null;
     if (!u.isGeneral) {
       onMinionDied(u, r, c);
-      if (u.owner === 'enemy' && !state.aiBusy) {
-        state.turnKills++;
-        if (state.turnKills === 2) showCallout('🔥 DOUBLE KILL!', '#fbbf24');
-        else if (state.turnKills >= 3) showCallout(`⚡ ${state.turnKills}x MULTI-KILL!`, '#f43f5e');
+      if (u.owner === 'enemy') {
+        state.stats.kills++;
+        if (!state.aiBusy) {
+          state.turnKills++;
+          if (state.turnKills === 2) showCallout('🔥 DOUBLE KILL!', '#fbbf24');
+          else if (state.turnKills >= 3) showCallout(`⚡ ${state.turnKills}x MULTI-KILL!`, '#f43f5e');
+        }
       }
     }
     return true;
@@ -1540,6 +1573,7 @@ function summonMinion(card, r, c, owner) {
     attacksLeft: (rush && !isStruct) ? (celerity ? 2 : 1) : 0
   });
   state.board[r][c] = unit;
+  if (owner === 'player') state.stats.minionsSummoned++;
   SFX.play('summon');
   spawnPillar(r, c, owner === 'player' ? '#38bdf8' : '#f43f5e');
   spawnRing(r, c, '#10b981', 56);
@@ -1596,6 +1630,7 @@ function castSpell(card, r, c, owner, step2Pos = null) {
   const g = findGeneral(owner);
   const opp = owner === 'player' ? 'enemy' : 'player';
   const oppG = findGeneral(opp);
+  if (owner === 'player') state.stats.spellsCast++;
   SFX.play('spell');
   if (g) spawnProjectile(g.r, g.c, r, c, '#c084fc');
   triggerShake(6);
@@ -1809,14 +1844,17 @@ function processTurnEndEffects(owner) {
 }
 
 // =========================================================================
-// 6. BBS 스킬 & 턴 종료 AI (적 카드 사용 실시간 공개 팝업 포함)
+// 6. BBS 스킬 & 턴 종료 AI
 // =========================================================================
 function triggerBBS(owner) {
   if (!state.useBbsMode) return false;
   const fac = owner === 'player' ? state.playerFaction : state.enemyFaction;
   const mana = owner === 'player' ? state.pMana : state.eMana;
   const cd = owner === 'player' ? state.pBbsCd : state.eBbsCd;
-  if (cd > 0 || mana < fac.bbsCost) return false;
+  if (cd > 0 || mana < fac.bbsCost) {
+    if (owner === 'player' && mana < fac.bbsCost) { state.manaWarnT = 18; SFX.play('error'); }
+    return false;
+  }
   const g = findGeneral(owner);
   if (!g) return false;
 
@@ -2027,7 +2065,7 @@ function endPlayerTurn() {
 }
 
 // =========================================================================
-// 7. 입력 처리
+// 7. 마우스 · 우클릭 · 키보드 단축키 입력 처리
 // =========================================================================
 function getMousePos(evt) {
   const rect = canvas.getBoundingClientRect();
@@ -2037,6 +2075,74 @@ function getMousePos(evt) {
   };
 }
 function inside(mx, my, x, y, w, h) { return mx >= x && mx <= x + w && my >= y && my <= y + h; }
+
+function cancelSelection() {
+  if (state.screen !== 'battle') return;
+  if (state.targetMode || state.selectedCardIdx !== null || state.selectedPos !== null || state.replaceMode) {
+    state.targetMode = null;
+    state.selectedCardIdx = null;
+    state.selectedPos = null;
+    state.replaceMode = false;
+    SFX.play('select');
+  }
+}
+
+function selectOrPlayHandCard(i) {
+  if (i < 0 || i >= state.pHand.length || state.targetMode || state.aiBusy) return;
+  if (state.replaceMode) {
+    const oldC = state.pHand[i];
+    const newC = state.pDeck.pop();
+    state.pDeck.unshift(oldC);
+    state.pHand[i] = newC;
+    state.replacedThisTurn = true;
+    state.replaceMode = false;
+    SFX.play('card');
+    addLog(`🔄 [${oldC.name}] → [${newC.name}] 교체!`);
+    return;
+  }
+  const card = state.pHand[i];
+  if (card.type === 'artifact' && state.selectedCardIdx === i) {
+    if (card.cost <= state.pMana) {
+      state.pMana -= card.cost; state.pHand.splice(i, 1);
+      equipArtifact(card, 'player'); state.selectedCardIdx = null;
+    } else {
+      state.manaWarnT = 18;
+      SFX.play('error');
+    }
+    return;
+  }
+  SFX.play('card');
+  state.selectedCardIdx = state.selectedCardIdx === i ? null : i;
+  state.selectedPos = null;
+}
+
+canvas.addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+  cancelSelection();
+});
+
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    cancelSelection();
+  } else if (state.screen === 'mulligan' && (e.key === ' ' || e.key === 'Enter')) {
+    e.preventDefault();
+    confirmMulligan();
+  } else if (state.screen === 'battle' && !state.winner && !state.aiBusy) {
+    if (e.key >= '1' && e.key <= '6') {
+      selectOrPlayHandCard(parseInt(e.key, 10) - 1);
+    } else if (e.key === 'r' || e.key === 'R') {
+      if (!state.replacedThisTurn && state.pDeck.length > 0 && !state.targetMode) {
+        SFX.play('select');
+        state.replaceMode = !state.replaceMode;
+        state.selectedCardIdx = null; state.selectedPos = null;
+      }
+    } else if (e.key === ' ' || e.key === 'Enter') {
+      e.preventDefault();
+      if (state.targetMode) { state.targetMode = null; SFX.play('select'); }
+      else endPlayerTurn();
+    }
+  }
+});
 
 canvas.addEventListener('mousemove', (e) => {
   const { x, y } = getMousePos(e);
@@ -2057,12 +2163,18 @@ canvas.addEventListener('mousemove', (e) => {
 
 canvas.addEventListener('click', (e) => {
   const { x, y } = getMousePos(e);
+  canvas.focus();
   SFX.init();
 
-  // 우측 상단 사운드 토글 버튼 (전 화면 공통)
+  // 우측 상단 사운드 & BGM 토글 버튼 (전 화면 공통)
   if (inside(x, y, 1234, 16, 36, 36)) {
     SFX.muted = !SFX.muted;
     if (!SFX.muted) SFX.play('select');
+    return;
+  }
+  if (inside(x, y, 1234, 58, 36, 36)) {
+    SFX.toggleBgm();
+    if (SFX.bgmOn) SFX.play('select');
     return;
   }
 
@@ -2118,7 +2230,7 @@ canvas.addEventListener('click', (e) => {
   }
 
   if (state.winner) {
-    if (inside(x, y, W / 2 - 150, H / 2 + 40, 300, 58)) {
+    if (inside(x, y, W / 2 - 150, H / 2 + 95, 300, 58)) {
       SFX.play('select');
       state.screen = 'select';
     }
@@ -2156,27 +2268,7 @@ canvas.addEventListener('click', (e) => {
   for (let i = 0; i < state.pHand.length; i++) {
     const cx = 195 + i * 155;
     if (inside(x, y, cx, 560, 146, 230)) {
-      if (state.targetMode) return;
-      if (state.replaceMode) {
-        const oldC = state.pHand[i];
-        const newC = state.pDeck.pop();
-        state.pDeck.unshift(oldC);
-        state.pHand[i] = newC;
-        state.replacedThisTurn = true;
-        state.replaceMode = false;
-        SFX.play('card');
-        addLog(`🔄 [${oldC.name}] → [${newC.name}] 교체!`);
-        return;
-      }
-      const card = state.pHand[i];
-      if (card.type === 'artifact' && state.selectedCardIdx === i && card.cost <= state.pMana) {
-        state.pMana -= card.cost; state.pHand.splice(i, 1);
-        equipArtifact(card, 'player'); state.selectedCardIdx = null;
-        return;
-      }
-      SFX.play('card');
-      state.selectedCardIdx = state.selectedCardIdx === i ? null : i;
-      state.selectedPos = null;
+      selectOrPlayHandCard(i);
       return;
     }
   }
@@ -2281,25 +2373,28 @@ canvas.addEventListener('click', (e) => {
 
     if (state.selectedCardIdx !== null) {
       const card = state.pHand[state.selectedCardIdx];
-      if (card.cost <= state.pMana) {
-        if (card.type === 'minion' && getValidSummonTiles('player', card).some(t => t.r === r && t.c === c)) {
-          state.pMana -= card.cost; state.pHand.splice(state.selectedCardIdx, 1);
-          summonMinion(card, r, c, 'player'); state.selectedCardIdx = null; return;
+      if (card.cost > state.pMana) {
+        state.manaWarnT = 18;
+        SFX.play('error');
+        return;
+      }
+      if (card.type === 'minion' && getValidSummonTiles('player', card).some(t => t.r === r && t.c === c)) {
+        state.pMana -= card.cost; state.pHand.splice(state.selectedCardIdx, 1);
+        summonMinion(card, r, c, 'player'); state.selectedCardIdx = null; return;
+      }
+      if (card.type === 'artifact') {
+        state.pMana -= card.cost; state.pHand.splice(state.selectedCardIdx, 1);
+        equipArtifact(card, 'player'); state.selectedCardIdx = null; return;
+      }
+      if (card.type === 'spell' && getValidSpellTargets(card, 'player').some(t => t.r === r && t.c === c)) {
+        if (['daemonic_lure', 'juxtaposition'].includes(card.spell)) {
+          SFX.play('select');
+          state.targetMode = { kind: 'spell_step2', cardIdx: state.selectedCardIdx, firstPos: { r, c } };
+          addLog(card.spell === 'juxtaposition' ? '✨ 위치를 맞바꿀 두 번째 하수인을 클릭하세요!' : '✨ 이동시킬 목적지 빈 칸을 클릭하세요!');
+          return;
         }
-        if (card.type === 'artifact') {
-          state.pMana -= card.cost; state.pHand.splice(state.selectedCardIdx, 1);
-          equipArtifact(card, 'player'); state.selectedCardIdx = null; return;
-        }
-        if (card.type === 'spell' && getValidSpellTargets(card, 'player').some(t => t.r === r && t.c === c)) {
-          if (['daemonic_lure', 'juxtaposition'].includes(card.spell)) {
-            SFX.play('select');
-            state.targetMode = { kind: 'spell_step2', cardIdx: state.selectedCardIdx, firstPos: { r, c } };
-            addLog(card.spell === 'juxtaposition' ? '✨ 위치를 맞바꿀 두 번째 하수인을 클릭하세요!' : '✨ 이동시킬 목적지 빈 칸을 클릭하세요!');
-            return;
-          }
-          state.pMana -= card.cost; state.pHand.splice(state.selectedCardIdx, 1);
-          castSpell(card, r, c, 'player'); state.selectedCardIdx = null; return;
-        }
+        state.pMana -= card.cost; state.pHand.splice(state.selectedCardIdx, 1);
+        castSpell(card, r, c, 'player'); state.selectedCardIdx = null; return;
       }
       state.selectedCardIdx = null;
     }
@@ -2337,12 +2432,17 @@ function roundRect(x, y, w, h, r, fill, stroke, lw = 2) {
   if (stroke) { ctx.lineWidth = lw; ctx.strokeStyle = stroke; ctx.stroke(); }
 }
 
-function drawSoundToggle() {
+function drawAudioControls() {
   roundRect(1234, 16, 36, 36, 6, '#0b1224', SFX.muted ? '#475569' : '#38bdf8', 1.5);
   ctx.textAlign = 'center';
   ctx.font = '15px sans-serif';
   ctx.fillStyle = SFX.muted ? '#64748b' : '#38bdf8';
   ctx.fillText(SFX.muted ? '🔇' : '🔊', 1252, 40);
+
+  roundRect(1234, 58, 36, 36, 6, '#0b1224', SFX.bgmOn && !SFX.muted ? '#fbbf24' : '#334155', 1.5);
+  ctx.font = '15px sans-serif';
+  ctx.fillStyle = SFX.bgmOn && !SFX.muted ? '#fbbf24' : '#64748b';
+  ctx.fillText('🎵', 1252, 82);
 }
 
 function drawUnitSprite(key, cx, cy, size, flipX = false, mode = 'normal', alpha = 1.0) {
@@ -2355,6 +2455,51 @@ function drawUnitSprite(key, cx, cy, size, flipX = false, mode = 'normal', alpha
   ctx.translate(cx, cy);
   if (flipX) ctx.scale(-1, 1);
   ctx.drawImage(img, -size / 2, -size / 2, size, size);
+  ctx.restore();
+}
+
+function drawArtifactEmblem(art, cx, cy) {
+  ctx.save();
+  ctx.translate(cx, cy);
+  if (art === 'artifact_regalia') {
+    ctx.fillStyle = '#f59e0b';
+    ctx.strokeStyle = '#fef08a'; ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(-18, -20); ctx.lineTo(18, -20); ctx.lineTo(18, 2); ctx.lineTo(0, 24); ctx.lineTo(-18, 2);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(0, -12); ctx.lineTo(0, 14); ctx.moveTo(-10, -2); ctx.lineTo(10, -2); ctx.stroke();
+  } else if (art === 'artifact_mask') {
+    ctx.strokeStyle = '#fda4af'; ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(-20, -20); ctx.lineTo(20, 20);
+    ctx.moveTo(20, -20); ctx.lineTo(-20, 20);
+    ctx.stroke();
+    ctx.fillStyle = '#e11d48';
+    ctx.beginPath(); ctx.arc(0, 0, 8, 0, Math.PI * 2); ctx.fill();
+  } else if (art === 'artifact_staff') {
+    ctx.strokeStyle = '#14b8a6'; ctx.lineWidth = 3.5;
+    ctx.beginPath(); ctx.moveTo(-16, 22); ctx.lineTo(12, -14); ctx.stroke();
+    ctx.fillStyle = '#5eead4';
+    ctx.beginPath(); ctx.arc(14, -16, 9, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#fef08a'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(14, -16, 14, 0, Math.PI * 2); ctx.stroke();
+  } else if (art === 'artifact_void') {
+    ctx.strokeStyle = '#f0abfc'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(-4, 0, 20, -Math.PI * 0.65, Math.PI * 0.65); ctx.stroke();
+    ctx.strokeStyle = '#9333ea'; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.moveTo(-18, 20); ctx.lineTo(8, -12); ctx.stroke();
+  } else if (art === 'artifact_claw') {
+    ctx.strokeStyle = '#6ee7b7'; ctx.lineWidth = 3;
+    for (const dx of [-12, 0, 12]) {
+      ctx.beginPath(); ctx.moveTo(dx - 6, -20); ctx.quadraticCurveTo(dx + 8, 0, dx - 4, 22); ctx.stroke();
+    }
+  } else {
+    ctx.strokeStyle = '#bae6fd'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(-10, 22); ctx.lineTo(10, -22); ctx.stroke();
+    ctx.fillStyle = '#38bdf8';
+    ctx.beginPath(); ctx.arc(8, -14, 13, -Math.PI * 0.4, Math.PI * 0.7); ctx.fill();
+  }
   ctx.restore();
 }
 
@@ -2406,13 +2551,12 @@ function drawCardArt(card, x, y, w, h, isHovered = false) {
       ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI * 2); ctx.fill();
     }
   } else if (card.type === 'artifact') {
-    grad.addColorStop(0, '#92400e'); grad.addColorStop(1, '#070a12');
+    grad.addColorStop(0, '#78350f'); grad.addColorStop(1, '#070a12');
     ctx.fillStyle = grad; ctx.fillRect(x, y, w, h);
-    const rg = ctx.createRadialGradient(cx, cy, 3, cx, cy, 32);
-    rg.addColorStop(0, '#ffffff'); rg.addColorStop(0.45, '#fbbf24'); rg.addColorStop(1, 'rgba(245,158,11,0)');
-    ctx.fillStyle = rg; ctx.beginPath(); ctx.arc(cx, cy, 32, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = '#fef08a'; ctx.lineWidth = 2.5;
-    ctx.beginPath(); ctx.moveTo(cx, cy - 24); ctx.lineTo(cx + 20, cy); ctx.lineTo(cx, cy + 24); ctx.lineTo(cx - 20, cy); ctx.closePath(); ctx.stroke();
+    const rg = ctx.createRadialGradient(cx, cy, 3, cx, cy, 34);
+    rg.addColorStop(0, 'rgba(254,240,138,0.55)'); rg.addColorStop(1, 'rgba(245,158,11,0)');
+    ctx.fillStyle = rg; ctx.beginPath(); ctx.arc(cx, cy, 34, 0, Math.PI * 2); ctx.fill();
+    drawArtifactEmblem(card.art, cx, cy);
   } else {
     grad.addColorStop(0, '#0f172a'); grad.addColorStop(1, '#1e293b');
     ctx.fillStyle = grad; ctx.fillRect(x, y, w, h);
@@ -2476,9 +2620,9 @@ function drawAtmosphereBg() {
   ctx.restore();
 
   const pillars = [
-    { x: 24, y: 150, w: 30, h: 250, spd: 0.018 },
-    { x: 904, y: 140, w: 28, h: 260, spd: 0.022 },
-    { x: 1236, y: 165, w: 34, h: 240, spd: 0.016 }
+    { x: 16, y: 150, w: 22, h: 250, spd: 0.018 },
+    { x: 904, y: 140, w: 24, h: 260, spd: 0.022 },
+    { x: 1238, y: 165, w: 28, h: 240, spd: 0.016 }
   ];
   pillars.forEach((p, idx) => {
     const py = p.y + Math.sin(state.tick * p.spd + idx) * 9;
@@ -2542,14 +2686,14 @@ function drawTitleScreen() {
   ctx.fillText('CHRONICLES OF MYTHRON', W / 2, 298);
 
   ctx.font = '15px "Noto Sans KR"'; ctx.fillStyle = '#94a3b8';
-  ctx.fillText('4프레임 픽셀 아트 · 전술 경로 예측 · 레트로 신스 사운드 & 시네마틱 VFX', W / 2, 470);
+  ctx.fillText('4프레임 픽셀 아트 · 전술 경로 예측 · 단축키/우클릭 · 신스 사운드 & BGM', W / 2, 470);
 
   const pulse = 0.6 + Math.sin(state.tick * 0.08) * 0.4;
   roundRect(W / 2 - 175, 535, 350, 70, 8, '#0284c7', `rgba(56, 189, 248, ${pulse})`, 3);
   ctx.font = '900 22px "Noto Sans KR"'; ctx.fillStyle = '#ffffff';
   ctx.fillText('⚔️ PLAY NOW', W / 2, 578);
 
-  drawSoundToggle();
+  drawAudioControls();
 }
 
 function drawSelectScreen() {
@@ -2595,10 +2739,10 @@ function drawSelectScreen() {
     ctx.fillText(sel.mechanicDesc.slice(i * 16, (i + 1) * 16), 80, 524 + i * 17);
   }
   ctx.fillStyle = '#38bdf8';
-  ctx.fillText(`• 전술 경로 예측 & 킬각 표시`, 80, 608);
-  ctx.fillText(`• 레트로 신스 사운드 & 콤보 배너`, 80, 626);
+  ctx.fillText(`• 단축키: 1~6 / R / Space / 우클릭`, 80, 608);
+  ctx.fillText(`• 전술 예측 & 아티팩트 고유 아트`, 80, 626);
   ctx.fillStyle = '#fbbf24';
-  ctx.fillText(`• 적 카드 실시간 공개 & 멀리건`, 80, 646);
+  ctx.fillText(`• 전투 결과 통계 & 앰비언트 BGM`, 80, 646);
 
   ctx.font = '900 14px "Noto Sans KR"'; ctx.fillStyle = '#fbbf24';
   ctx.fillText(`🃏 [${sel.title}] 전용 덱 핵심 카드 9종`, 280, 268);
@@ -2627,10 +2771,16 @@ function drawSelectScreen() {
       ctx.fillText(`⚔️ ${c.atk}   ❤️ ${c.hp}`, kx + 66, ky + 58);
       ctx.font = '10px "Noto Sans KR"'; ctx.fillStyle = '#38bdf8';
       ctx.fillText(c.keywords.length ? c.keywords[0].toUpperCase() : 'MINION', kx + 66, ky + 76);
+    } else if (c.type === 'artifact') {
+      drawArtifactEmblem(c.art, kx + 34, ky + 62);
+      ctx.font = 'bold 11.5px "Noto Sans KR"'; ctx.fillStyle = '#fbbf24';
+      ctx.fillText(`장군 +${c.atkBonus} ATK`, kx + 66, ky + 58);
+      ctx.font = '10px "Noto Sans KR"'; ctx.fillStyle = '#fde047';
+      ctx.fillText('내구도 3', kx + 66, ky + 76);
     } else {
       ctx.font = 'bold 11.5px "Noto Sans KR"';
-      ctx.fillStyle = c.type === 'spell' ? '#e879f9' : '#fbbf24';
-      ctx.fillText(c.type === 'spell' ? '🔮 SPELL (주문)' : `🛡️ ARTIFACT (+${c.atkBonus} ATK)`, kx + 14, ky + 56);
+      ctx.fillStyle = '#e879f9';
+      ctx.fillText('🔮 SPELL (주문)', kx + 14, ky + 56);
     }
 
     ctx.font = '10.5px "Noto Sans KR"'; ctx.fillStyle = '#cbd5e1';
@@ -2662,7 +2812,7 @@ function drawSelectScreen() {
   ctx.font = '900 17px "Noto Sans KR"'; ctx.fillStyle = '#ffffff';
   ctx.fillText('⚔️ 전투 시작', 1132, 738);
 
-  drawSoundToggle();
+  drawAudioControls();
 }
 
 function drawMulliganScreen() {
@@ -2675,7 +2825,7 @@ function drawMulliganScreen() {
   ctx.fillText('OPENING HAND MULLIGAN', W / 2, 130);
 
   ctx.font = '15px "Noto Sans KR"'; ctx.fillStyle = '#38bdf8';
-  ctx.fillText(`교체할 카드를 최대 2장까지 선택하세요 (${state.mulliganSelected.size}/2 선택됨)`, W / 2, 172);
+  ctx.fillText(`교체할 카드를 최대 2장까지 선택하세요 (${state.mulliganSelected.size}/2 선택됨) · [Space] 시작`, W / 2, 172);
 
   for (let i = 0; i < state.pHand.length; i++) {
     const c = state.pHand[i];
@@ -2711,7 +2861,7 @@ function drawMulliganScreen() {
   ctx.font = '900 20px "Noto Sans KR"'; ctx.fillStyle = '#ffffff';
   ctx.fillText('⚔️ 결투 시작 (CONFIRM)', W / 2, 619);
 
-  drawSoundToggle();
+  drawAudioControls();
 }
 
 function drawTacticalArrow(r1, c1, r2, c2, color) {
@@ -2761,100 +2911,126 @@ function drawBattleScreen() {
   const eHp = eg ? eg.unit.hp : 0;
 
   // 좌측 플레이어 HUD
-  roundRect(55, 16, 158, 96, 8, '#0b1224', pf.color, 2);
-  drawUnitSprite(pf.sprite, 102, 60, 78, false, 'normal');
+  roundRect(55, 16, 158, 92, 8, '#0b1224', pf.color, 2);
+  drawUnitSprite(pf.sprite, 102, 58, 76, false, 'normal');
   ctx.textAlign = 'center';
   ctx.font = '900 12px "Noto Sans KR"'; ctx.fillStyle = pf.color;
-  ctx.fillText(pf.name.split(' ')[0], 102, 104);
-  ctx.fillStyle = '#be123c';
-  ctx.beginPath(); ctx.arc(176, 48, 22, 0, Math.PI * 2); ctx.fill();
-  ctx.strokeStyle = '#fda4af'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.fillText(pf.name.split(' ')[0], 102, 100);
+
+  const lowHpPulse = pHp <= 8 ? Math.sin(state.tick * 0.18) * 3 : 0;
+  ctx.fillStyle = pHp <= 8 ? '#e11d48' : '#be123c';
+  ctx.beginPath(); ctx.arc(176, 46, 21 + lowHpPulse * 0.5, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = pHp <= 8 ? '#fef08a' : '#fda4af'; ctx.lineWidth = 2; ctx.stroke();
   ctx.font = '900 16px "Noto Sans KR"'; ctx.fillStyle = '#ffffff';
-  ctx.fillText(pHp, 176, 54);
-  roundRect(156, 78, 40, 22, 4, '#ca8a04', '#fef08a', 1.5);
+  ctx.fillText(pHp, 176, 52);
+  roundRect(156, 75, 40, 22, 4, '#ca8a04', '#fef08a', 1.5);
   ctx.font = '900 12px "Noto Sans KR"'; ctx.fillStyle = '#ffffff';
-  ctx.fillText(`⚔️${pg ? pg.unit.atk : 0}`, 176, 94);
+  ctx.fillText(`⚔️${pg ? pg.unit.atk : 0}`, 176, 91);
 
   if (state.useBbsMode) {
     const bbsReady = state.pBbsCd === 0 && state.pMana >= pf.bbsCost;
     ctx.fillStyle = bbsReady ? '#172554' : '#0f172a';
-    ctx.beginPath(); ctx.arc(261, 60, 34, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(261, 58, 33, 0, Math.PI * 2); ctx.fill();
     ctx.strokeStyle = state.targetMode ? '#fbbf24' : (bbsReady ? '#38bdf8' : '#334155');
     ctx.lineWidth = 3; ctx.stroke();
     ctx.font = '900 11px "Noto Sans KR"';
     ctx.fillStyle = bbsReady ? '#38bdf8' : '#64748b';
-    ctx.fillText('BBS 스킬', 261, 56);
-    ctx.fillText(state.pBbsCd === 0 ? `${pf.bbsCost}마나` : `${state.pBbsCd}턴대기`, 261, 73);
+    ctx.fillText('BBS 스킬', 261, 54);
+    ctx.fillText(state.pBbsCd === 0 ? `${pf.bbsCost}마나` : `${state.pBbsCd}턴대기`, 261, 71);
   } else {
-    roundRect(225, 24, 72, 72, 8, '#0b1224', '#1e293b', 1.5);
+    roundRect(225, 22, 72, 72, 8, '#0b1224', '#1e293b', 1.5);
     ctx.font = 'bold 10px "Noto Sans KR"'; ctx.fillStyle = '#94a3b8';
-    ctx.fillText('DUELYST II', 261, 55);
+    ctx.fillText('DUELYST II', 261, 53);
     ctx.fillStyle = '#38bdf8';
-    ctx.fillText('2-DRAW', 261, 72);
+    ctx.fillText('2-DRAW', 261, 70);
   }
 
+  // 마나 크리스탈 바 (마나 부족 시 흔들림 경고)
+  if (state.manaWarnT > 0) state.manaWarnT--;
+  const mOffX = state.manaWarnT > 0 ? Math.sin(state.manaWarnT * 1.6) * 5 : 0;
   for (let m = 0; m < 9; m++) {
-    ctx.fillStyle = m < state.pMana ? '#38bdf8' : (m < state.pMaxMana ? '#1e3a5f' : '#0f172a');
+    ctx.fillStyle = state.manaWarnT > 0 ? '#f43f5e' : (m < state.pMana ? '#38bdf8' : (m < state.pMaxMana ? '#1e3a5f' : '#0f172a'));
     ctx.beginPath();
-    ctx.moveTo(318 + m * 22, 26); ctx.lineTo(326 + m * 22, 36);
-    ctx.lineTo(318 + m * 22, 46); ctx.lineTo(310 + m * 22, 36);
+    ctx.moveTo(318 + mOffX + m * 22, 24); ctx.lineTo(326 + mOffX + m * 22, 34);
+    ctx.lineTo(318 + mOffX + m * 22, 44); ctx.lineTo(310 + mOffX + m * 22, 34);
     ctx.closePath(); ctx.fill();
   }
   ctx.textAlign = 'left';
-  ctx.font = 'bold 13px "Noto Sans KR"'; ctx.fillStyle = '#93c5fd';
-  ctx.fillText(`MANA ${state.pMana}/${state.pMaxMana}`, 516, 41);
+  ctx.font = 'bold 13px "Noto Sans KR"'; ctx.fillStyle = state.manaWarnT > 0 ? '#fda4af' : '#93c5fd';
+  ctx.fillText(`MANA ${state.pMana}/${state.pMaxMana}`, 516 + mOffX, 39);
 
   state.pArtifacts.forEach((a, idx) => {
-    roundRect(310 + idx * 118, 56, 112, 38, 5, '#451a03', '#f59e0b', 1.5);
+    roundRect(310 + idx * 118, 54, 112, 38, 5, '#451a03', '#f59e0b', 1.5);
     ctx.font = 'bold 10.5px "Noto Sans KR"'; ctx.fillStyle = '#fef08a';
-    ctx.fillText(a.name.slice(0, 7), 316 + idx * 118, 72);
+    ctx.fillText(a.name.slice(0, 7), 316 + idx * 118, 70);
     ctx.fillStyle = '#fbbf24';
-    ctx.fillText(`내구도: ${'◆'.repeat(a.dur)}`, 316 + idx * 118, 87);
+    ctx.fillText(`내구도: ${'◆'.repeat(a.dur)}`, 316 + idx * 118, 85);
   });
 
   // 중앙 턴 & 타겟 모드 배너
   ctx.textAlign = 'center';
   ctx.font = '900 16px "Cinzel", serif'; ctx.fillStyle = '#f8fafc';
-  ctx.fillText(`TURN ${state.turn}`, W / 2 + 45, 36);
+  ctx.fillText(`TURN ${state.turn}`, W / 2 + 45, 34);
   ctx.font = 'bold 11.5px "Noto Sans KR"'; ctx.fillStyle = diff.color;
-  ctx.fillText(`[${diff.name}]`, W / 2 + 45, 55);
+  ctx.fillText(`[${diff.name}]`, W / 2 + 45, 53);
 
   if (state.targetMode) {
-    roundRect(W / 2 - 95, 64, 280, 26, 4, '#78350f', '#fbbf24', 1.5);
+    roundRect(W / 2 - 95, 62, 280, 26, 4, '#78350f', '#fbbf24', 1.5);
     ctx.font = 'bold 11.5px "Noto Sans KR"'; ctx.fillStyle = '#fef08a';
-    ctx.fillText('🎯 수동 대상 지정 중 — 보드 위 유닛 클릭', W / 2 + 45, 81);
+    ctx.fillText('🎯 수동 대상 지정 중 — 우클릭/ESC 취소', W / 2 + 45, 79);
   } else {
-    ctx.font = '11px "Noto Sans KR"'; ctx.fillStyle = '#94a3b8';
-    ctx.fillText('A~D: 아군 진영 | E: 중앙선 | F~I: 적 진영(침투)', W / 2 + 45, 76);
+    ctx.font = '10.5px "Noto Sans KR"'; ctx.fillStyle = '#94a3b8';
+    ctx.fillText('단축키: [1~6] 카드 · [R] 교체 · [Space] 턴종료 · [우클릭] 취소', W / 2 + 45, 75);
   }
 
   // 우측 적 HUD
-  roundRect(1067, 16, 158, 96, 8, '#0b1224', ef.color, 2);
-  drawUnitSprite(ef.sprite, 1178, 60, 78, true, 'normal');
+  roundRect(1067, 16, 158, 92, 8, '#0b1224', ef.color, 2);
+  drawUnitSprite(ef.sprite, 1178, 58, 76, true, 'normal');
   ctx.textAlign = 'center';
   ctx.font = '900 12px "Noto Sans KR"'; ctx.fillStyle = ef.color;
-  ctx.fillText(ef.name.split(' ')[0], 1178, 104);
+  ctx.fillText(ef.name.split(' ')[0], 1178, 100);
   ctx.fillStyle = '#be123c';
-  ctx.beginPath(); ctx.arc(1104, 48, 22, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(1104, 46, 21, 0, Math.PI * 2); ctx.fill();
   ctx.strokeStyle = '#fda4af'; ctx.lineWidth = 2; ctx.stroke();
   ctx.font = '900 16px "Noto Sans KR"'; ctx.fillStyle = '#ffffff';
-  ctx.fillText(eHp, 1104, 54);
-  roundRect(1084, 78, 40, 22, 4, '#ca8a04', '#fef08a', 1.5);
+  ctx.fillText(eHp, 1104, 52);
+  roundRect(1084, 75, 40, 22, 4, '#ca8a04', '#fef08a', 1.5);
   ctx.font = '900 12px "Noto Sans KR"'; ctx.fillStyle = '#ffffff';
-  ctx.fillText(`⚔️${eg ? eg.unit.atk : 0}`, 1104, 94);
+  ctx.fillText(`⚔️${eg ? eg.unit.atk : 0}`, 1104, 91);
 
   ctx.textAlign = 'right';
   ctx.font = '12px "Noto Sans KR"'; ctx.fillStyle = '#94a3b8';
-  ctx.fillText(`적 마나 ${state.eMana}/${state.eMaxMana} | 덱 ${state.eDeck.length}장`, 1052, 42);
+  ctx.fillText(`적 마나 ${state.eMana}/${state.eMaxMana} | 덱 ${state.eDeck.length}장`, 1052, 40);
   ctx.fillStyle = ef.color;
-  ctx.fillText(ef.mechanicTag.split('·')[0], 1052, 64);
+  ctx.fillText(ef.mechanicTag.split('·')[0], 1052, 62);
 
-  drawSoundToggle();
+  drawAudioControls();
 
-  // 전장 외곽 신전 프레임 장식
+  // 전장 외곽 신전 프레임 & 좌표 헤더(A~I / 1~5 / 침투 구역)
   const boardW = COLS * (TILE_W + GAP) - GAP;
   const boardH = ROWS * (TILE_H + GAP) - GAP;
-  roundRect(BOARD_X - 10, BOARD_Y - 10, boardW + 20, boardH + 24, 10, 'rgba(4, 8, 18, 0.72)', 'rgba(56, 189, 248, 0.28)', 2);
+  roundRect(BOARD_X - 24, BOARD_Y - 20, boardW + 34, boardH + 34, 10, 'rgba(4, 8, 18, 0.76)', 'rgba(56, 189, 248, 0.28)', 2);
+
+  // 적 진영(F~I열) 침투 구역 하이라이트 헤더
+  const infX = BOARD_X + 5 * (TILE_W + GAP);
+  const infW = 4 * (TILE_W + GAP) - GAP;
+  roundRect(infX, BOARD_Y - 17, infW, 13, 3, 'rgba(244, 63, 94, 0.18)', 'rgba(244, 63, 94, 0.45)', 1);
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 8.5px "Noto Sans KR"'; ctx.fillStyle = '#fda4af';
+  ctx.fillText('❄️ 적 진영 · 침투 구역 (INFILTRATE ZONE)', infX + infW / 2, BOARD_Y - 8);
+
+  for (let c = 0; c < COLS; c++) {
+    const cx = BOARD_X + c * (TILE_W + GAP) + TILE_W / 2;
+    ctx.font = 'bold 10px monospace';
+    ctx.fillStyle = c >= 5 ? '#fda4af' : (c === 4 ? '#38bdf8' : '#64748b');
+    if (c < 5) ctx.fillText(COL_LABELS[c], cx, BOARD_Y - 7);
+  }
+  for (let r = 0; r < ROWS; r++) {
+    const cy = BOARD_Y + r * (TILE_H + GAP) + TILE_H / 2 + 4;
+    ctx.font = 'bold 10px monospace';
+    ctx.fillStyle = '#64748b';
+    ctx.fillText(`${r + 1}`, BOARD_X - 12, cy);
+  }
 
   // 중앙 2.5D 전술 보드
   let moves = [], attacks = [], summons = [], spells = [];
@@ -2903,7 +3079,6 @@ function drawBattleScreen() {
 
     roundRect(tx, ty, TILE_W, TILE_H, 5, fill, stroke, lw);
 
-    // 타일 상단 베벨 하이라이트 & 코너 리벳
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
     ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(tx + 5, ty + 2); ctx.lineTo(tx + TILE_W - 5, ty + 2); ctx.stroke();
@@ -2911,13 +3086,11 @@ function drawBattleScreen() {
     ctx.fillRect(tx + 3, ty + 3, 2, 2);
     ctx.fillRect(tx + TILE_W - 5, ty + 3, 2, 2);
 
-    // 이동 가능 타일 중앙 웨이포인트 점
     if (isMove && !state.board[r][c]) {
       ctx.fillStyle = 'rgba(56, 189, 248, 0.55)';
       ctx.beginPath(); ctx.arc(tx + TILE_W / 2, ty + TILE_H / 2, 4, 0, Math.PI * 2); ctx.fill();
     }
 
-    // 공격 가능 타일 회전 조준선 브래킷
     if (isAtk || isSpl) {
       const bOff = Math.sin(state.tick * 0.14) * 2;
       ctx.strokeStyle = '#fda4af';
@@ -2964,7 +3137,6 @@ function drawBattleScreen() {
       ctx.restore();
     }
 
-    // 그림자 역병(Shadow Creep)
     if (creep) {
       const pulse = Math.sin(state.tick * 0.08 + r + c) * 3;
       ctx.strokeStyle = 'rgba(232, 121, 249, 0.65)';
@@ -2975,7 +3147,6 @@ function drawBattleScreen() {
       ctx.fillRect(tx + TILE_W / 2 + 6, ty + TILE_H / 2 + 4 - pulse, 3, 3);
     }
 
-    // 입체 마나 샘 크리스탈 + 룬 마법진
     if (state.manaOrbs.some(o => o.r === r && o.c === c)) {
       const ocx = tx + TILE_W / 2;
       const ocy = ty + TILE_H / 2 - 2 + Math.sin(state.tick * 0.08) * 4;
@@ -2996,11 +3167,10 @@ function drawBattleScreen() {
       ctx.beginPath(); ctx.moveTo(ocx, ocy - 14); ctx.lineTo(ocx - 10, ocy); ctx.lineTo(ocx, ocy + 14); ctx.closePath(); ctx.fill();
     }
 
-    // 소환 미리보기 (Ghost Preview)
     if (isSum && isHov && activeHandCard && !state.board[r][c]) {
       const gx = tx + TILE_W / 2;
       const gy = ty + TILE_H / 2 - 8;
-      drawUnitSprite(activeHandCard.sprite, gx, gy, 62, false, 'normal', 0.6);
+      drawUnitSprite(activeHandCard.sprite, gx, gy, 60, false, 'normal', 0.6);
 
       ctx.textAlign = 'center';
       ctx.font = 'bold 10px "Noto Sans KR"';
@@ -3068,7 +3238,7 @@ function drawBattleScreen() {
       u.trail.shift();
     }
     for (const tr of u.trail) {
-      drawUnitSprite(u.sprite, tr.x, tr.y, u.isGeneral ? 74 : 64, u.owner === 'enemy', 'ghost', tr.alpha * 0.52);
+      drawUnitSprite(u.sprite, tr.x, tr.y, u.isGeneral ? 72 : 62, u.owner === 'enemy', 'ghost', tr.alpha * 0.52);
       tr.alpha *= 0.85;
     }
 
@@ -3076,7 +3246,6 @@ function drawBattleScreen() {
     const buffed = effAtk > u.atk;
     const canAct = u.owner === 'player' && !state.aiBusy && !u.stunned && (u.movesLeft > 0 || u.attacksLeft > 0);
 
-    // 장군 아티팩트 장착 시 회전하는 황금 보호막 링
     if (u.isGeneral) {
       const arts = u.owner === 'player' ? state.pArtifacts : state.eArtifacts;
       if (arts.length > 0) {
@@ -3102,7 +3271,6 @@ function drawBattleScreen() {
     ctx.textAlign = 'center';
     ctx.fillText(u.owner === 'player' ? '▸' : '◂', u.owner === 'player' ? cx + 28 : cx - 28, ty + TILE_H - 12);
 
-    // 상단 상태/키워드 배지
     ctx.font = 'bold 9.5px "Noto Sans KR"';
     const isBsTarget = isAtk && state.selectedPos && isBackstabPosition(state.board[state.selectedPos.r][state.selectedPos.c], state.selectedPos.r, state.selectedPos.c, r, c);
     if (isBsTarget) { ctx.fillStyle = '#f43f5e'; ctx.fillText('🗡️기습(+2)', cx, ty + 13); }
@@ -3116,9 +3284,8 @@ function drawBattleScreen() {
     else if (u.keywords.includes('celerity')) { ctx.fillStyle = '#fde047'; ctx.fillText('⚡질풍', cx, ty + 13); }
     else if (u.keywords.includes('rebirth')) { ctx.fillStyle = '#6ee7b7'; ctx.fillText('🥚환생', cx, ty + 13); }
 
-    drawUnitSprite(u.sprite, cx, cy, u.isGeneral ? 74 : 64, u.owner === 'enemy', u.flashT > 0 ? 'flash' : 'normal');
+    drawUnitSprite(u.sprite, cx, cy, u.isGeneral ? 72 : 62, u.owner === 'enemy', u.flashT > 0 ? 'flash' : 'normal');
 
-    // 하단 체력 게이지 바
     const barW = 30, barH = 4;
     const hpRatio = Math.max(0, Math.min(1, u.hp / u.maxHp));
     ctx.fillStyle = '#090d16';
@@ -3133,7 +3300,6 @@ function drawBattleScreen() {
     roundRect(tx + TILE_W - 29, ty + TILE_H - 22, 24, 18, 4, '#be123c', '#fda4af', 1);
     ctx.fillText(u.hp, tx + TILE_W - 17, ty + TILE_H - 9);
 
-    // 적 타겟 호버 시 실시간 킬각/반격 플로팅 예측 배지
     if (isAtk && isHov && state.selectedPos) {
       const myU = state.board[state.selectedPos.r][state.selectedPos.c];
       const bs = isBackstabPosition(myU, state.selectedPos.r, state.selectedPos.c, r, c);
@@ -3195,7 +3361,7 @@ function drawBattleScreen() {
   roundRect(55, 585, 118, 185, 10, state.replaceMode ? '#78350f' : '#0b1224', state.replaceMode ? '#fbbf24' : (canRep ? '#38bdf8' : '#1e293b'), 2);
   ctx.textAlign = 'center';
   ctx.font = '900 13px "Noto Sans KR"'; ctx.fillStyle = canRep ? '#38bdf8' : '#475569';
-  ctx.fillText('REPLACE', 114, 655);
+  ctx.fillText('REPLACE [R]', 114, 655);
   ctx.font = '11px "Noto Sans KR"'; ctx.fillStyle = '#cbd5e1';
   ctx.fillText(state.replaceMode ? '교체할 카드 클릭' : (canRep ? '카드 교체 (1회)' : '교체 불가'), 114, 680);
 
@@ -3211,7 +3377,7 @@ function drawBattleScreen() {
     roundRect(cx, cy, 146, 230, 8, isSel ? '#172554' : '#0b1224', borderCol, isSel ? 3 : 2);
     drawCardArt(c, cx + 8, cy + 32, 130, 82, isHov || isSel);
 
-    ctx.fillStyle = '#0284c7';
+    ctx.fillStyle = ok ? '#0284c7' : '#334155';
     ctx.beginPath(); ctx.arc(cx + 18, cy + 16, 11, 0, Math.PI * 2); ctx.fill();
     ctx.textAlign = 'center';
     ctx.font = '900 13px "Noto Sans KR"'; ctx.fillStyle = '#ffffff';
@@ -3219,7 +3385,7 @@ function drawBattleScreen() {
 
     ctx.font = 'bold 10px "Noto Sans KR"';
     ctx.fillStyle = c.type === 'spell' ? '#e879f9' : (c.type === 'artifact' ? '#fbbf24' : '#38bdf8');
-    ctx.fillText(c.type.toUpperCase(), cx + 84, cy + 20);
+    ctx.fillText(`[${i + 1}] ${c.type.toUpperCase()}`, cx + 84, cy + 20);
 
     ctx.font = '900 12px "Noto Sans KR"'; ctx.fillStyle = '#f8fafc';
     ctx.fillText(c.name, cx + 73, cy + 130);
@@ -3272,8 +3438,10 @@ function drawBattleScreen() {
     roundRect(1135, 585, 115, 115, 10, state.aiBusy ? '#1e293b' : '#0284c7', '#38bdf8', 2.5);
     ctx.textAlign = 'center';
     ctx.font = '900 16px "Noto Sans KR"'; ctx.fillStyle = '#ffffff';
-    ctx.fillText('END', 1192, 636);
-    ctx.fillText('TURN', 1192, 658);
+    ctx.fillText('END', 1192, 634);
+    ctx.fillText('TURN', 1192, 654);
+    ctx.font = '10px "Noto Sans KR"'; ctx.fillStyle = '#bae6fd';
+    ctx.fillText('[SPACE]', 1192, 676);
   }
 
   roundRect(1135, 710, 115, 60, 8, '#0f172a', '#475569', 1.5);
@@ -3478,6 +3646,16 @@ function drawBattleScreen() {
     }
   }
 
+  // 장군 체력 8 이하 위기 비네트
+  if (pHp > 0 && pHp <= 8) {
+    const pulse = 0.14 + Math.sin(state.tick * 0.12) * 0.08;
+    const vg = ctx.createRadialGradient(W / 2, H / 2, 320, W / 2, H / 2, 720);
+    vg.addColorStop(0, 'rgba(225, 29, 72, 0)');
+    vg.addColorStop(1, `rgba(225, 29, 72, ${pulse})`);
+    ctx.fillStyle = vg;
+    ctx.fillRect(0, 0, W, H);
+  }
+
   // 풀스크린 충격 플래시
   if (state.screenFlash.alpha > 0.01) {
     ctx.save();
@@ -3490,17 +3668,30 @@ function drawBattleScreen() {
 
   ctx.restore();
 
+  // 승리 / 패배 & 전적 통계 패널
   if (state.winner) {
-    ctx.fillStyle = 'rgba(3, 5, 10, 0.85)';
+    ctx.fillStyle = 'rgba(3, 5, 10, 0.88)';
     ctx.fillRect(0, 0, W, H);
-    ctx.textAlign = 'center';
-    ctx.font = '900 46px "Cinzel", serif';
-    ctx.fillStyle = state.winner === 'PLAYER' ? '#38bdf8' : '#f43f5e';
-    ctx.fillText(state.winner === 'PLAYER' ? 'VICTORY' : 'DEFEAT', W / 2, H / 2 - 20);
 
-    roundRect(W / 2 - 150, H / 2 + 40, 300, 58, 8, '#0284c7', '#38bdf8', 2);
+    roundRect(W / 2 - 240, H / 2 - 175, 480, 355, 12, '#090e1c', state.winner === 'PLAYER' ? '#38bdf8' : '#f43f5e', 2.5);
+    ctx.textAlign = 'center';
+    ctx.font = '900 44px "Cinzel", serif';
+    ctx.fillStyle = state.winner === 'PLAYER' ? '#38bdf8' : '#f43f5e';
+    ctx.fillText(state.winner === 'PLAYER' ? 'VICTORY' : 'DEFEAT', W / 2, H / 2 - 108);
+
+    ctx.font = 'bold 13px "Noto Sans KR"'; ctx.fillStyle = '#94a3b8';
+    ctx.fillText(`${pf.name} vs ${ef.name} · [${diff.name}]`, W / 2, H / 2 - 74);
+
+    roundRect(W / 2 - 195, H / 2 - 52, 390, 126, 8, '#050811', '#1e293b', 1.5);
+    ctx.font = 'bold 13px "Noto Sans KR"'; ctx.fillStyle = '#e2e8f0';
+    ctx.fillText(`⏱️ 진행 턴: ${state.turn}턴     💥 총 가한 피해: ${state.stats.dmgDealt}`, W / 2, H / 2 - 20);
+    ctx.fillText(`✨ 소환한 하수인: ${state.stats.minionsSummoned}기     🔮 시전한 주문: ${state.stats.spellsCast}회`, W / 2, H / 2 + 14);
+    ctx.fillStyle = '#fbbf24';
+    ctx.fillText(`💀 처치한 적 유닛: ${state.stats.kills}기`, W / 2, H / 2 + 48);
+
+    roundRect(W / 2 - 150, H / 2 + 95, 300, 58, 8, '#0284c7', '#38bdf8', 2);
     ctx.font = '900 18px "Noto Sans KR"'; ctx.fillStyle = '#ffffff';
-    ctx.fillText('🔄 진영 / 난이도 선택으로', W / 2, H / 2 + 75);
+    ctx.fillText('🔄 진영 / 난이도 선택으로', W / 2, H / 2 + 130);
   }
 }
 
